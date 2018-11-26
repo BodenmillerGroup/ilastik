@@ -20,25 +20,22 @@
         "lazyflow.operators":                                       { "level":"INFO" },
         "lazyflow.operators.ioOperators":                           { "level":"INFO" },
         "lazyflow.operators.ioOperators.opRESTfulVolumeReader":     { "level":"INFO" },
-        "lazyflow.operators.opVigraWatershed":                      { "level":"INFO" },
         "lazyflow.operators.opFeatureMatrixCache":                  { "level":"INFO" },
         "lazyflow.operators.opConcatenateFeatureMatrices":          { "level":"INFO" },
         
-        "lazyflow.operators.opArrayCache.OpArrayCache":                           { "level":"INFO" },
         "lazyflow.operators.opBlockedArrayCache.OpBlockedArrayCache":             { "level":"INFO" },
         "lazyflow.operators.opSlicedBlockedArrayCache.OpSlicedBlockedArrayCache": { "level":"INFO" },
         "lazyflow.operators.opCompressedCache.OpCompressedCache":                 { "level":"INFO" },
         
         "lazyflow.operators.ioOperators.opInputDataReader.OpInputDataReader":     { "level":"INFO" },
         "lazyflow.operators.ioOperators.opStreamingHdf5Reader.OpStreamingHdf5Reader":     { "level":"INFO" },
-        "lazyflow.operators.vigraOperators.OpImageReader":                        { "level":"INFO" },
+        "lazyflow.operators.ioOperators.ioOperators.OpImageReader":                       { "level":"INFO" },
         
         "volumina.pixelpipeline.imagesources.GrayscaleImageSource":  { "level": "INFO" },
         "volumina.pixelpipeline.imagesources.GrayscaleImageRequest": { "level": "INFO" },
         
-        "lazyflow.operators.opArrayCache.OpArrayCache":                { "level":"INFO" },
         "lazyflow.operators.cacheMemoryManager.CacheMemoryManager":  { "level":"INFO" },
-        "lazyflow.operators.vigraOperators":                        { "level":"INFO" },
+        "lazyflow.operators.filterOperators":                        { "level":"INFO" },
         "lazyflow.operators.ioOperators.ioOperators.OpH5WriterBigDataset":  	{ "level":"INFO" },
         "lazyflow.operators.classifierOperators":                   { "level":"INFO" },
         "lazyflow.operators.opCompressedCache":                     { "level":"INFO" },

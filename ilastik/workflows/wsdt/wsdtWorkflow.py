@@ -99,7 +99,7 @@ class WsdtWorkflow(Workflow):
             self._data_export_args = None
 
         if unused_args:
-            logger.warn("Unused command-line args: {}".format( unused_args ))
+            logger.warning("Unused command-line args: {}".format( unused_args ))
 
     def connectLane(self, laneIndex):
         """
@@ -119,8 +119,8 @@ class WsdtWorkflow(Workflow):
         opDataExport.Inputs.resize( len(self.EXPORT_NAMES) )
         opDataExport.Inputs[0].connect( opWsdt.Superpixels )
         for slot in opDataExport.Inputs:
-            assert slot.partner is not None
-        
+            assert slot.upstream_slot is not None
+
     def onProjectLoaded(self, projectManager):
         """
         Overridden from Workflow base class.  Called by the Project Manager.

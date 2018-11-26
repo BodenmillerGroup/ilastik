@@ -28,8 +28,9 @@ logger = logging.getLogger(__name__)
 from abc import ABCMeta
 
 from ilastik.config import cfg as ilastik_config
-from ilastik.utility.simpleSignal import SimpleSignal
+from lazyflow.utility.orderedSignal import OrderedSignal
 from ilastik.utility.maybe import maybe
+from ilastik.utility.commandLineProcessing import convertStringToList
 import os
 import sys
 import re
@@ -574,7 +575,7 @@ class SerialHdf5BlockSlot(SerialBlockSlot):
             groupName, labelGroup = t
             assert extract_index(groupName) == index, "subgroup extraction order should be numerical order!"
             for blockRoiString, blockDataset in list(labelGroup.items()):
-                blockRoi = eval(blockRoiString)
+                blockRoi = convertStringToList(blockRoiString)
                 roiShape = TinyVector(blockRoi[1]) - TinyVector(blockRoi[0])
                 assert roiShape == blockDataset.shape
 
@@ -641,22 +642,6 @@ class SerialClassifierSlot(SerialSlot):
         # loaded. As soon as training input changes, it will be
         # retrained.)
         self.cache.forceValue( classifier )
-
-class SerialPickledValueSlot(SerialSlot):
-    """
-    For storing value slots whose data is a python object (not an array or a simple number).
-    """
-    def __init__(self, slot):
-        super(SerialPickledValueSlot, self).__init__(slot)
-    
-    @staticmethod
-    def _saveValue(group, name, value):
-        group.create_dataset(name, data=pickle.dumps(value, 0))
-
-    @staticmethod
-    def _getValue(subgroup, slot):
-        val = subgroup[()]
-        slot.setValue(pickle.loads(val))
 
 
 class SerialCountingSlot(SerialSlot):
@@ -771,6 +756,14 @@ class SerialDictSlot(SerialSlot):
                 if isinstance(v, str):
                     # h5py can't store unicode, so we store all strings as encoded utf-8 bytes
                     v = v.encode('utf-8')
+                if isinstance(v, list):
+                    vv = []
+                    for a in v:
+                        if isinstance(a, str):
+                            vv.append(a.encode('utf-8'))
+                        else:
+                            vv.append(a)
+                    v = vv
                 sg.create_dataset(str(key), data=v)
 
     def _getValueHelper(self, subgroup):
@@ -783,7 +776,7 @@ class SerialDictSlot(SerialSlot):
                 if isinstance(value, bytes):
                     # h5py can't store unicode, so we store all strings as encoded utf-8 bytes
                     value = value.decode('utf-8')
-                
+
             result[self.transform(key)] = value
         return result
 
@@ -793,6 +786,19 @@ class SerialDictSlot(SerialSlot):
             slot.setValue(result)
         except AssertionError as e:
             warnings.warn('setValue() failed. message: {}'.format(e.message))
+
+class SerialObjectFeatureNamesSlot(SerialDictSlot):
+    """Backwards compatible serializer for DictSlot containing feature names"""
+
+    def _getValue(self, subgroup, slot):
+        """Retrieves value for Slot "slot" from the h5 subgroup "subgroup"
+
+        Global feature names used to be saved into .ilp files under a '0' key.
+        That is no longer the case, so this method peels that extra level off when
+        it is present."""
+        if list(subgroup.keys()) == ['0']:
+            subgroup = subgroup['0']
+        return super()._getValue(subgroup, slot)
 
 class SerialClassifierFactorySlot(SerialSlot):
     def __init__(self, slot, name=None):
@@ -831,14 +837,17 @@ class SerialClassifierFactorySlot(SerialSlot):
 
 
 class SerialPickleableSlot(SerialSlot):
-    def __init__(self, slot, version, default, name=None):
+    def __init__(self, slot, version, default=None, name=None):
         super( SerialPickleableSlot, self ).__init__( slot, name=name )
         self._failed_to_deserialize = False
         self._version = version
         self._default = default
 
     def _saveValue(self, group, name, value):
-        pickled = pickle.dumps( value, 0 )
+        # we pickle to a string and convert to numpy.void,
+        # because HDF5 has some limitations as to which strings it can serialize
+        # (see http://docs.h5py.org/en/latest/strings.html)
+        pickled = numpy.void(pickle.dumps(value, 0))
         dset = group.create_dataset(name, data=pickled)
         dset.attrs['version'] = self._version
         self._failed_to_deserialize = False
@@ -850,21 +859,32 @@ class SerialPickleableSlot(SerialSlot):
             return super(SerialPickleableSlot, self).shouldSerialize(group)
 
     def _getValue(self, dset, slot):
+        # first check that the version of the deserialized and the expected value are the same
         try:
-            # first check that the version of the deserialized and the expected value are the same
             loaded_version = dset.attrs['version']
-            assert loaded_version == self._version
-
+        except KeyError as e:
+            loaded_version = None
+            logger.debug('No `version` attribute found.')
+        if not loaded_version == self._version:
+            logger.warning(
+                f'PickleableSlot version mismatch detected. (loaded: {loaded_version}, running:{self._version})'
+                'Trying to load slot value.')
+        try:
             # Attempt to unpickle
             pickled = dset[()]
+            if isinstance(pickled, numpy.void):
+                # get the numpy.void object from the HDF5 dataset and convert it to bytes
+                pickled = pickled.tobytes()
             value = pickle.loads(pickled)
-        except:
+        except Exception as e:
             self._failed_to_deserialize = True
             warnings.warn("This project file uses an old or unsupported storage format. "
-                          "When save the project the next time, it will be stored in the new format.")
+                          "When save the project the next time, it will be stored in the new format.\n"
+                          "Encountered exception:\n"
+                          "{}".format(e))
             slot.setValue(self._default)
         else:
-            slot.setValue( value )
+            slot.setValue(value)
 
 ####################################
 # the base applet serializer class #
@@ -917,12 +937,11 @@ class AppletSerializer(with_metaclass(ABCMeta, object)):
         :param slots: a list of SerialSlots
 
         """
-        self.progressSignal = SimpleSignal() # Signature: emit(percentComplete)
+        self.progressSignal = OrderedSignal()  # Signature: __call__(percentComplete)
         self.base_initialized = True
         self.topGroupName = topGroupName
         self.serialSlots = maybe(slots, [])
         self.operator = operator
-        self.caresOfHeadless = False # should _deserializeFromHdf5 should be called with headless-argument?
         self._ignoreDirty = False
 
     def isDirty(self):
@@ -991,7 +1010,7 @@ class AppletSerializer(with_metaclass(ABCMeta, object)):
         topGroup = getOrCreateGroup(hdf5File, self.topGroupName)
 
         progress = 0
-        self.progressSignal.emit(progress)
+        self.progressSignal(progress)
 
         # Set the version
         key = 'StorageVersion'
@@ -1003,12 +1022,12 @@ class AppletSerializer(with_metaclass(ABCMeta, object)):
             for ss in self.serialSlots:
                 ss.serialize(topGroup)
                 progress += inc
-                self.progressSignal.emit(progress)
+                self.progressSignal(progress)
 
             # Call the subclass to do remaining work, if any
             self._serializeToHdf5(topGroup, hdf5File, projectFilePath)
         finally:
-            self.progressSignal.emit(100)
+            self.progressSignal(100)
 
     def deserializeFromHdf5(self, hdf5File, projectFilePath, headless = False):
         """Read the the current applet state from the given hdf5File
@@ -1028,7 +1047,7 @@ class AppletSerializer(with_metaclass(ABCMeta, object)):
             (in headless mode corrupted files cannot be fixed via the GUI)
         
         """
-        self.progressSignal.emit(0)
+        self.progressSignal(0)
 
         # If the top group isn't there, call initWithoutTopGroup
         try:
@@ -1043,18 +1062,15 @@ class AppletSerializer(with_metaclass(ABCMeta, object)):
                 inc = self.progressIncrement()
                 for ss in self.serialSlots:
                     ss.deserialize(topGroup)
-                    self.progressSignal.emit(inc)
+                    self.progressSignal(inc)
 
                 # Call the subclass to do remaining work
-                if self.caresOfHeadless:
-                    self._deserializeFromHdf5(topGroup, groupVersion, hdf5File, projectFilePath, headless)
-                else:
-                    self._deserializeFromHdf5(topGroup, groupVersion, hdf5File, projectFilePath)
+                self._deserializeFromHdf5(topGroup, groupVersion, hdf5File, projectFilePath, headless)
             else:
                 self.initWithoutTopGroup(hdf5File, projectFilePath)
         finally:
-            self.progressSignal.emit(100)
-    
+            self.progressSignal(100)
+
     def repairFile(self,path,filt = None):
         """get new path to lost file"""
         
@@ -1063,10 +1079,10 @@ class AppletSerializer(with_metaclass(ABCMeta, object)):
         text = "The file at {} could not be found any more. Do you want to search for it at another directory?".format(path)
         logger.info(text)
         c = QMessageBox.critical(None, "update external data",text, QMessageBox.Ok | QMessageBox.Cancel)
-        
+
         if c == QMessageBox.Cancel:
             raise RuntimeError("Could not find external data: " + path)
-        
+
         options = QFileDialog.Options()
         if ilastik_config.getboolean("ilastik", "debug"):
             options |=  QFileDialog.DontUseNativeDialog
@@ -1075,18 +1091,18 @@ class AppletSerializer(with_metaclass(ABCMeta, object)):
             raise RuntimeError("Could not find external data: " + path)
         else:
             return fileName
-        
+
     #######################
     # Optional methods    #
     #######################
-    
+
     def initWithoutTopGroup(self, hdf5File, projectFilePath):
         """Optional override for subclasses. Called when there is no
         top group to deserialize.
 
         """
         pass
-    
+
     def updateWorkingDirectory(self,newdir,olddir):
         """Optional override for subclasses. Called when the
         working directory is changed and relative paths have

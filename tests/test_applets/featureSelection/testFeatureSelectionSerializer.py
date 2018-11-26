@@ -43,13 +43,13 @@ class TestFeatureSelectionSerializer(object):
             
             # Create an operator to work with and give it some input
             graph = Graph()
-            operatorToSave = OpFeatureSelection(graph=graph, filter_implementation='Original')
+            operatorToSave = OpFeatureSelection(graph=graph)
 
             scales = operatorToSave.Scales.value
             featureIds = operatorToSave.FeatureIds.value
 
             # All False (no features selected)
-            selectionMatrix = operatorToSave.SelectionMatrix.value.copy()
+            selectionMatrix = operatorToSave.MinimalFeatures
         
             # Change a few to True
             selectionMatrix[0,0] = True
@@ -72,7 +72,7 @@ class TestFeatureSelectionSerializer(object):
             assert (testProject['FeatureSelections/SelectionMatrix'].value == selectionMatrix).all()
         
             # Deserialize into a fresh operator
-            operatorToLoad = OpFeatureSelection(graph=graph, filter_implementation='Original')
+            operatorToLoad = OpFeatureSelection(graph=graph)
 
             deserializer = FeatureSelectionSerializer(operatorToLoad, 'FeatureSelections')
             deserializer.deserializeFromHdf5(testProject, testProjectName)
@@ -87,10 +87,3 @@ class TestFeatureSelectionSerializer(object):
             assert (operatorToLoad.SelectionMatrix.value == selectionMatrix).all()
 
         os.remove(testProjectName)
-
-if __name__ == "__main__":
-    import sys
-    import nose
-    sys.argv.append("--nocapture")    # Don't steal stdout.  Show it on the console as usual.
-    sys.argv.append("--nologcapture") # Don't set the logging level to DEBUG.  Leave it alone.
-    nose.run(defaultTest=__file__)

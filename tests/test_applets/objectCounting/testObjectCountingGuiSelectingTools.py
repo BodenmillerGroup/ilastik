@@ -48,9 +48,9 @@ class TestObjectCountingDrawing(ShellGuiTestCaseBase):
     SAMPLE_DATA.append( os.path.split(__file__)[0] + '/1.npy')
 
     @classmethod
-    def setupClass(cls):
+    def setup_class(cls):
         # Base class first
-        super(TestObjectCountingDrawing, cls).setupClass()
+        super(TestObjectCountingDrawing, cls).setup_class()
 
         if hasattr(cls, 'SAMPLE_DATA'):
             cls.using_random_data = False
@@ -67,9 +67,9 @@ class TestObjectCountingDrawing(ShellGuiTestCaseBase):
             numpy.save(cls.SAMPLE_DATA[1], data2.astype(numpy.uint8))
 
     @classmethod
-    def teardownClass(cls):
+    def teardown_class(cls):
         # Call our base class so the app quits!
-        super(TestObjectCountingDrawing, cls).teardownClass()
+        super(TestObjectCountingDrawing, cls).teardown_class()
 
         # Clean up: Delete any test files we generated
         removeFiles = [ TestObjectCountingDrawing.PROJECT_FILE ]
@@ -108,8 +108,6 @@ class TestObjectCountingDrawing(ShellGuiTestCaseBase):
 
             # Set some features
             opFeatures = workflow.featureSelectionApplet.topLevelOperator
-            opFeatures.FeatureIds.setValue( OpPixelFeaturesPresmoothed.DefaultFeatureIds )
-            opFeatures.Scales.setValue( [0.3, 0.7, 1, 1.6, 3.5, 5.0, 10.0] )
             #                    sigma:   0.3    0.7    1.0    1.6    3.5    5.0   10.0
             selections = numpy.array( [[True, False, False, False, False, False, False],
                                        [True, False, False, False, False, False, False],
@@ -256,7 +254,7 @@ class TestObjectCountingDrawing(ShellGuiTestCaseBase):
 
 
 if __name__ == "__main__":
-    from tests.helpers.shellGuiTestCaseBase import run_shell_nosetest
-    run_shell_nosetest(__file__)
+    from tests.helpers.shellGuiTestCaseBase import run_shell_test
+    run_shell_test(__file__)
 
 

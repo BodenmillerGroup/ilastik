@@ -38,23 +38,40 @@ from lazyflow.operators import OpPixelOperator
 from ilastik.applets.counting.countingsvr import SVR
 
 
+from lazyflow.operators.filterOperators import OpGaussianSmoothing
+from lazyflow.operators import OpReorderAxes
 
-from lazyflow.operators.imgFilterOperators import OpGaussianSmoothing
 
-
-class OpLabelPreviewer(OpGaussianSmoothing):
+class OpLabelPreviewer(Operator):
     name = "LabelPreviewer"
+    Input = InputSlot()
+    sigma = InputSlot()
+    Output = OutputSlot()
 
-class OpLabelPreviewerRefactored(Operator):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.smoothing = OpGaussianSmoothing(parent=self)
+        self.inReorder = OpReorderAxes(parent=self)
+        self.outReorder = OpReorderAxes(parent=self)
 
-    name = "LabelPreviewer"
+    def setupOutputs(self):
+        self.smoothing.sigma.connect(self.sigma)
+        self.inReorder.AxisOrder.setValue('tczyx')
+        self.outReorder.AxisOrder.setValue(''.join(self.Input.meta.getAxisKeys()))
 
-    inputSlots = [InputSlot("Images", level=1)]
-    outputSlots = [OutputSlot("Output", level=1)]
+        self.inReorder.Input.connect(self.Input)
+        self.smoothing.Input.connect(self.inReorder.Output)
 
+        self.outReorder.Input.connect(self.smoothing.Output)
+        self.Output.connect(self.outReorder.Output)
 
-
-
+    def propagateDirty(self, slot, subindex, roi):
+        if slot == self.Input:
+            self.Output.setDirty(roi)
+        elif slot == self.sigma:
+            self.Output.setDirty(slice(None))
+        else:
+            raise NotImplementedError(f'propagateDirty not implemented for slot {slot.name}')
 
 
 def checkOption(reqlist):
@@ -66,28 +83,30 @@ def checkOption(reqlist):
     return True
 
 
-
 class OpTrainCounter(Operator):
     name = "TrainCounter"
     description = "Train a random forest on multiple images"
     category = "Learning"
 
-    inputSlots = [InputSlot("Images", level=1),
-                  InputSlot("ForegroundLabels", level=1), 
-                  InputSlot("BackgroundLabels", level=1),
-                  InputSlot("fixClassifier", stype="bool"),
-                  InputSlot("nonzeroLabelBlocks", level=1),
-                  InputSlot("Sigma", stype = "float", value=2.0), 
-                  InputSlot("Epsilon",  stype = "float"), 
-                  InputSlot("C",  stype = "float"), 
-                  InputSlot("SelectedOption", stype = "object"),
-                  InputSlot("Ntrees", stype = "int"), #RF parameter
-                  InputSlot("MaxDepth", stype = "object"), #RF parameter, None means grow until purity
-                  InputSlot("BoxConstraintRois", level = 1, stype = "list", value = []),
-                  InputSlot("BoxConstraintValues", level = 1, stype = "list", value = []),
-                  InputSlot("UpperBound")
-                 ]
-    outputSlots = [OutputSlot("Classifier")]
+    # Definition of inputs:
+    Images = InputSlot(level=1)
+    ForegroundLabels = InputSlot(level=1)
+    BackgroundLabels = InputSlot(level=1)
+    nonzeroLabelBlocks = InputSlot(level=1)
+
+    fixClassifier = InputSlot(stype="bool")
+    Sigma = InputSlot(stype="float", value=2.0)
+    Epsilon = InputSlot(stype="float")
+    C = InputSlot(stype="float")
+    SelectedOption = InputSlot(stype="object")
+    Ntrees = InputSlot(stype="int")  # RF parameter
+    MaxDepth = InputSlot(stype="object")  # RF parameter, None means grow until purity
+    BoxConstraintRois = InputSlot(level=1, stype="list", value=[])
+    BoxConstraintValues = InputSlot(level=1, stype="list", value=[])
+    UpperBound = InputSlot()
+
+    # Definition of the outputs:
+    Classifier = OutputSlot()
     options = SVR.options
     availableOptions = [checkOption(option["req"]) for option in SVR.options]
     numRegressors = 4
@@ -172,8 +191,9 @@ class OpTrainCounter(Operator):
 
         for i,labels in enumerate(self.inputs["ForegroundLabels"]):
             if labels.meta.shape is not None:
-                opGaussian = OpGaussianSmoothing(parent = self, graph = self.graph)
-                opGaussian.Sigma.setValue(self.Sigma.value)
+                opGaussian = OpLabelPreviewer(parent=self)
+                opGaussian.name = 'ManuallyGuardedOpGaussianSmoothing'
+                opGaussian.sigma.setValue(self.Sigma.value)
                 opGaussian.Input.connect(self.ForegroundLabels[i])
                 blocks = self.inputs["nonzeroLabelBlocks"][i][0].wait()
                 
@@ -363,20 +383,37 @@ if not any(OpTrainCounter.availableOptions):
     raise ImportError("None of the implemented methods are available")
 
 
-
 class OpPredictCounter(Operator):
     name = "PredictCounter"
     description = "Predict on multiple images"
     category = "Learning"
 
-    inputSlots = [InputSlot("Image"),InputSlot("Classifier"),InputSlot("LabelsCount",stype='integer')]
-    outputSlots = [OutputSlot("PMaps")]
+    # Definition of inputs:
+    Image = InputSlot()
+    Classifier = InputSlot()
+    LabelsCount = InputSlot(stype='integer')
+
+    # Definition of outputs:
+    PMaps = OutputSlot()
 
     def setupOutputs(self):
         nlabels=self.inputs["LabelsCount"].value
         self.PMaps.meta.dtype = np.float32
         self.PMaps.meta.axistags = copy.copy(self.Image.meta.axistags)
+        self.PMaps.meta.original_axistags = copy.copy(self.Image.meta.original_axistags)
         self.PMaps.meta.shape = self.Image.meta.shape[:-1] + (OpTrainCounter.numRegressors,) # FIXME: This assumes that channel is the last axis
+        o_shape = self.Image.meta.original_shape
+        if o_shape is not None:
+            o_shape = list(o_shape)
+            keylist = self.Image.meta.getOriginalAxisKeys()
+            if 'c' in keylist:
+                o_shape[keylist.index('c')] = OpTrainCounter.numRegressors
+            else:
+                o_shape += (OpTrainCounter.numRegressors, )
+
+            o_shape = tuple(o_shape)
+
+        self.PMaps.meta.original_shape = o_shape
         self.PMaps.meta.drange = (0.0, 1.0)
 
     def execute(self, slot, subindex, roi, result):
@@ -387,7 +424,7 @@ class OpPredictCounter(Operator):
         traceLogger.debug("OpPredictRandomForest: Requesting classifier. roi={}".format(roi))
         forests=self.inputs["Classifier"][:].wait()
 
-        if forests is None:
+        if any(forest is None for forest in forests):
             # Training operator may return 'None' if there was no data to train with
             return np.zeros(np.subtract(roi.stop, roi.start), dtype=np.float32)[...]
 

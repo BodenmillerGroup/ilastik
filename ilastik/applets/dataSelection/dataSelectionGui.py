@@ -58,6 +58,7 @@ from .datasetInfoEditorWidget import DatasetInfoEditorWidget
 from ilastik.widgets.stackFileSelectionWidget import StackFileSelectionWidget, H5VolumeSelectionDlg
 from .datasetDetailedInfoTableModel import DatasetDetailedInfoColumn, DatasetDetailedInfoTableModel
 from .datasetDetailedInfoTableView import DatasetDetailedInfoTableView
+from .precomputedVolumeBrowser import PrecomputedVolumeBrowser
 
 try:
     import libdvid
@@ -239,6 +240,8 @@ class DataSelectionGui(QWidget):
                     partial(self.addFiles, roleIndex))
             detailViewer.addStackRequested.connect(
                     partial(self.addStack, roleIndex))
+            detailViewer.addPrecomputedVolumeRequested.connect(
+                partial(self.addPrecomputedVolume, roleIndex))
             detailViewer.addRemoteVolumeRequested.connect(
                     partial(self.addDvidVolume, roleIndex))
 
@@ -465,7 +468,6 @@ class DataSelectionGui(QWidget):
             infos = self._createDatasetInfos(roleIndex, fileNames, rois)
         except DataSelectionGui.UserCancelledError:
             return
-        
         # If no exception was thrown so far, set up the operator now
         loaded_all = self._configureOpWithInfos(roleIndex, startingLane, endingLane, infos)
         
@@ -485,7 +487,7 @@ class DataSelectionGui(QWidget):
             workflow.handleNewLanesAdded()
 
         # Notify the workflow that something that could affect applet readyness has occurred.
-        self.parentApplet.appletStateUpdateRequested.emit()
+        self.parentApplet.appletStateUpdateRequested()
 
         self.updateInternalPathVisiblity()
 
@@ -595,7 +597,7 @@ class DataSelectionGui(QWidget):
         # Resize the slot if necessary            
         if len( opTop.DatasetGroup ) < endingLane+1:
             opTop.DatasetGroup.resize( endingLane+1 )
-        
+
         # Configure each subslot
         for laneIndex, info in zip(list(range(startingLane, endingLane+1)), infos):
             try:
@@ -604,9 +606,12 @@ class DataSelectionGui(QWidget):
                 return_val = [False]
                 # Give the user a chance to fix the problem
                 self.handleDatasetConstraintError(info, info.filePath, ex, roleIndex, laneIndex, return_val)
-                if not return_val[0]:
-                    # Not successfully repaired.  Roll back the changes and give up.
-                    opTop.DatasetGroup.resize( originalSize )
+                if return_val[0]:
+                    # Successfully repaired graph.
+                    continue
+                else:
+                    # Not successfully repaired.  Roll back the changes
+                    opTop.DatasetGroup.resize(originalSize)
                     return False
             except OpDataSelection.InvalidDimensionalityError as ex:
                     opTop.DatasetGroup.resize( originalSize )
@@ -618,7 +623,7 @@ class DataSelectionGui(QWidget):
                 QMessageBox.critical( self, "Dataset Load Error", msg )
                 opTop.DatasetGroup.resize( originalSize )
                 return False
-        
+
         return True
 
     def _reconfigureDatasetLocations(self, roleIndex, startingLane, endingLane):
@@ -675,29 +680,34 @@ class DataSelectionGui(QWidget):
             QMessageBox.warning( self, "Can't use dataset", msg )
             return_val[0] = False
         else:
-            msg = ( "Can't use default properties for dataset:\n\n"
-                    + filename + "\n\n"
-                    + "because it violates a constraint of the {} component.\n\n".format( ex.appletName )
-                    + ex.message + "\n\n"
-                    + "If possible, fix this problem by adjusting the dataset properties in the next window, or hit 'cancel' to abort." )
-            
-            QMessageBox.warning( self, "Dataset Needs Correction", msg )
-        
+            assert isinstance(ex, DatasetConstraintError)
+            accepted = True
+            while isinstance(ex, DatasetConstraintError) and accepted:
+                msg = (
+                    f"Can't use given properties for dataset:\n\n{filename}\n\nbecause it violates a constraint of "
+                    f"the {ex.appletName} component.\n\n{ex.message}\n\nIf possible, fix this problem by adjusting "
+                    f"the applet settings and or the dataset properties in the next window(s).")
+                QMessageBox.warning(self, "Dataset Needs Correction", msg)
+                for dlg in ex.fixing_dialogs:
+                    dlg()
+
+                accepted, ex = self.repairDatasetInfo(info, roleIndex, laneIndex)
+
             # The success of this is 'returned' via our special out-param
-            # (We can't return a value from this func because it is @threadRouted.
-            successfully_repaired = self.repairDatasetInfo( info, roleIndex, laneIndex )
-            return_val[0] = successfully_repaired
+            # (We can't return a value from this method because it is @threadRouted.
+            return_val[0] = accepted and ex is None  # successfully repaired
 
     def repairDatasetInfo(self, info, roleIndex, laneIndex):
         """Open the dataset properties editor and return True if the new properties are acceptable."""
         defaultInfos = {}
         defaultInfos[laneIndex] = info
-        editorDlg = DatasetInfoEditorWidget(self, self.topLevelOperator, roleIndex, [laneIndex], defaultInfos, show_axis_details=self.show_axis_details)
-        dlg_state = editorDlg.exec_()
-        return ( dlg_state == QDialog.Accepted )
+        editorDlg = DatasetInfoEditorWidget(self, self.topLevelOperator, roleIndex, [laneIndex], defaultInfos,
+                                            show_axis_details=self.show_axis_details)
+        dlg_state, ex = editorDlg.exec_()
+        return (dlg_state == QDialog.Accepted), ex
 
     @classmethod
-    def getPossibleInternalPaths(cls, absPath, min_ndim=3, max_ndim=5):
+    def getPossibleInternalPaths(cls, absPath, min_ndim=2, max_ndim=5):
         datasetNames = []
         # Open the file as a read-only so we can get a list of the internal paths
         with h5py.File(absPath, 'r') as f:
@@ -734,7 +744,7 @@ class DataSelectionGui(QWidget):
 
         def importStack():
             self.parentApplet.busy = True
-            self.parentApplet.appletStateUpdateRequested.emit()
+            self.parentApplet.appletStateUpdateRequested()
 
             # Serializer will update the operator for us, which will propagate to the GUI.
             try:
@@ -745,13 +755,15 @@ class DataSelectionGui(QWidget):
                     # Give the user a chance to repair the problem.
                     filename = files[0] + "\n...\n" + files[-1]
                     return_val = [False]
+                    self.parentApplet.busy = False  # required for possible fixing dialogs from DatasetConstraintError
+                    self.parentApplet.appletStateUpdateRequested()
                     self.handleDatasetConstraintError( info, filename, ex, roleIndex, laneIndex, return_val )
                     if not return_val[0]:
                         # Not successfully repaired.  Roll back the changes and give up.
                         self.topLevelOperator.DatasetGroup.resize(originalNumLanes)
             finally:
                 self.parentApplet.busy = False
-                self.parentApplet.appletStateUpdateRequested.emit()
+                self.parentApplet.appletStateUpdateRequested()
 
         req = Request( importStack )
         req.notify_finished( lambda result: self.showDataset(laneIndex, roleIndex) )
@@ -781,19 +793,30 @@ class DataSelectionGui(QWidget):
                 self.topLevelOperator.DatasetGroup.removeSlot( laneIndex, len(self.topLevelOperator.DatasetGroup)-1 )
 
         # Notify the workflow that something that could affect applet readyness has occurred.
-        self.parentApplet.appletStateUpdateRequested.emit()
+        self.parentApplet.appletStateUpdateRequested()
 
     def editDatasetInfo(self, roleIndex, laneIndexes):
         editorDlg = DatasetInfoEditorWidget(self, self.topLevelOperator, roleIndex, laneIndexes, show_axis_details=self.show_axis_details)
         editorDlg.exec_()
-        self.parentApplet.appletStateUpdateRequested.emit()
+        self.parentApplet.appletStateUpdateRequested()
 
     def updateInternalPathVisiblity(self):
         for view in self._detailViewerWidgets:
             model = view.model()
             view.setColumnHidden(DatasetDetailedInfoColumn.InternalID,
                                  not model.hasInternalPaths())
-    
+
+    def addPrecomputedVolume(self, roleIndex, laneIndex):
+        # add history...
+        history = []
+        browser = PrecomputedVolumeBrowser(history=history, parent=self)
+
+        if browser.exec_() == PrecomputedVolumeBrowser.Rejected:
+            return
+
+        precomputed_url = browser.selected_url
+        self.addFileNames([precomputed_url], roleIndex, laneIndex)
+
     def addDvidVolume(self, roleIndex, laneIndex):
         recent_hosts_pref = PreferencesManager.Setting("DataSelection", "Recent DVID Hosts")
         recent_hosts = recent_hosts_pref.get()

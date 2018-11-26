@@ -86,7 +86,12 @@ class FeatureSelectionResult(object):
 
 
 class FeatureSelectionDialog(QtWidgets.QDialog):
-    def __init__(self, current_opFeatureSelection, current_opPixelClassification):
+    def __init__(
+            self,
+            current_opFeatureSelection,
+            current_opPixelClassification,
+            labels_list_data
+        ):
         '''
 
         :param current_opFeatureSelection: opFeatureSelection from ilastik
@@ -149,7 +154,7 @@ class FeatureSelectionDialog(QtWidgets.QDialog):
         self._gui_initialized = False #  is set to true once gui is initialized, prevents multiple initialization
         self._feature_selection_results = []
 
-        self.colortable = colortables.default16
+        self.labels_list_data = labels_list_data
         self.layerstack = layerwidget.LayerStackModel()
 
         # this initializes the actual GUI
@@ -181,7 +186,7 @@ class FeatureSelectionDialog(QtWidgets.QDialog):
         currently being viewed in ilastik
 
         """
-
+        self.colortable = [lab.pmapColor().rgba() for lab in self.labels_list_data]
         #FIXME: the editor should return the current view coordinates without such workarounds
         if self.opPixelClassification.name == "OpPixelClassification":
             ilastik_editor = self.opPixelClassification.parent.pcApplet.getMultiLaneGui().currentGui().editor
@@ -269,8 +274,8 @@ class FeatureSelectionDialog(QtWidgets.QDialog):
             # Instantiation of the volumeEditor (+ widget)
             ###################
             self.editor = volumeEditorWidget.VolumeEditor(self.layerstack, parent=self)
-            self.viewer = volumeEditorWidget.VolumeEditorWidget()
-            self.viewer.init(self.editor)
+            self.volumeEditorWidget = volumeEditorWidget.VolumeEditorWidget()
+            self.volumeEditorWidget.init(self.editor)
 
             ###################
             # This section constructs the GUI elements that are displayed on the left side of the window
@@ -366,11 +371,11 @@ class FeatureSelectionDialog(QtWidgets.QDialog):
             upper_widget = QtWidgets.QWidget()
 
             upper_widget_layout.addWidget(left_side_panel)
-            upper_widget_layout.addWidget(self.viewer)
+            upper_widget_layout.addWidget(self.volumeEditorWidget)
             upper_widget_layout.addWidget(self.layer_widget)
 
             # make sure the volume viewer gets more space
-            upper_widget_layout.setStretchFactor(self.viewer, 8)
+            upper_widget_layout.setStretchFactor(self.volumeEditorWidget, 8)
             upper_widget_layout.setStretchFactor(left_side_panel, 3)
             upper_widget_layout.setStretchFactor(self.layer_widget, 3)
 

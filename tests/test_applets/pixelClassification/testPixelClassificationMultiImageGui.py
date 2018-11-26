@@ -47,9 +47,9 @@ class TestPixelClassificationGuiMultiImage(ShellGuiTestCaseBase):
     #SAMPLE_DATA.append( os.path.split(__file__)[0] + '/synapse_small.npy' )
 
     @classmethod
-    def setupClass(cls):
+    def setup_class(cls):
         # Base class first
-        super(TestPixelClassificationGuiMultiImage, cls).setupClass()
+        super(TestPixelClassificationGuiMultiImage, cls).setup_class()
         
         if hasattr(cls, 'SAMPLE_DATA'):
             cls.using_random_data = False
@@ -66,9 +66,9 @@ class TestPixelClassificationGuiMultiImage(ShellGuiTestCaseBase):
             numpy.save(cls.SAMPLE_DATA[1], data2.astype(numpy.uint8))
 
     @classmethod
-    def teardownClass(cls):
+    def teardown_class(cls):
         # Call our base class so the app quits!
-        super(TestPixelClassificationGuiMultiImage, cls).teardownClass()
+        super(TestPixelClassificationGuiMultiImage, cls).teardown_class()
 
         # Clean up: Delete any test files we generated
         removeFiles = [ TestPixelClassificationGuiMultiImage.PROJECT_FILE ]
@@ -104,8 +104,6 @@ class TestPixelClassificationGuiMultiImage(ShellGuiTestCaseBase):
             
             # Set some features
             opFeatures = workflow.featureSelectionApplet.topLevelOperator
-            opFeatures.FeatureIds.setValue( OpPixelFeaturesPresmoothed.DefaultFeatureIds )
-            opFeatures.Scales.setValue( [0.3, 0.7, 1, 1.6, 3.5, 5.0, 10.0] )
             #                    sigma:   0.3    0.7    1.0    1.6    3.5    5.0   10.0
             selections = numpy.array( [[True, False, False, False, False, False, False],
                                        [True, False, False, False, False, False, False],
@@ -175,12 +173,11 @@ class TestPixelClassificationGuiMultiImage(ShellGuiTestCaseBase):
             gui.currentGui().editor.posModel.slicingPos = (0,0,0)
 
             assert gui.currentGui()._labelControlUi.liveUpdateButton.isChecked() == False
-            assert gui.currentGui()._labelControlUi.labelListModel.rowCount() == 0
-            
+            assert gui.currentGui()._labelControlUi.labelListModel.rowCount() == 2
+
             # Add label classes
-            for i in range(3):
-                gui.currentGui()._labelControlUi.AddLabelButton.click()
-                assert gui.currentGui()._labelControlUi.labelListModel.rowCount() == i+1
+            gui.currentGui()._labelControlUi.AddLabelButton.click()
+            assert gui.currentGui()._labelControlUi.labelListModel.rowCount() == 3
 
             # Select the brush
             gui.currentGui()._labelControlUi.paintToolButton.click()
@@ -195,10 +192,8 @@ class TestPixelClassificationGuiMultiImage(ShellGuiTestCaseBase):
             for i in range(3):
                 # Post this as an event to ensure sequential execution.
                 gui.currentGui()._labelControlUi.labelListModel.select(i)
-                
                 imgView = gui.currentGui().editor.imageViews[i]
                 self.strokeMouseFromCenter( imgView, self.LABEL_START, self.LABEL_STOP )
-
                 # Make sure the labels were added to the label array operator
                 labelData = opPix.LabelImages[0][:].wait()
                 assert labelData.max() == i+1, "Max label value was {}".format( labelData.max() )
@@ -226,11 +221,50 @@ class TestPixelClassificationGuiMultiImage(ShellGuiTestCaseBase):
             workflow = self.shell.projectManager.workflow
             pixClassApplet = workflow.pcApplet
             gui = pixClassApplet.getMultiLaneGui()
+            opPix = pixClassApplet.topLevelOperator
 
-            # Clear all the labels
-            while len(gui.currentGui()._labelControlUi.labelListModel) > 0:
-                gui.currentGui()._labelControlUi.labelListModel.removeRow(0)
-                
+            # Clear the additional labels
+            while len(gui.currentGui()._labelControlUi.labelListModel) > 2:
+                gui.currentGui()._labelControlUi.labelListModel.removeRow(2)
+
+            # Erase the labels that where not deleted
+            # Select the labeling drawer
+            self.shell.setSelectedAppletDrawer(PIXEL_CLASSIFICATION_INDEX)
+
+            for i in range(2):
+                # Use the second view for this test (which has the max label value)
+                imgView = gui.currentGui().editor.imageViews[i]
+
+                # Sanity check: There should be labels in the view that we can erase
+                self.waitForViews([imgView])
+                observedColor = self.getPixelColor(imgView, self.LABEL_SAMPLE)
+                labelColor = gui.currentGui()._colorTable16[i+1]
+                assert observedColor == labelColor, "Can't run erase test.  Missing the expected label.  Expected {}, got {}".format(
+                    hex(labelColor), hex(observedColor))
+
+                # Hide labels and sample raw data
+                labelLayer = gui.currentGui().layerstack[0]
+                assert labelLayer.name == "Labels"
+                labelLayer.visible = False
+                self.waitForViews([imgView])
+                rawDataColor = self.getPixelColor(imgView, self.LABEL_SAMPLE)
+                assert rawDataColor != labelColor, "Pixel color was not correct after label was hidden.  rawDataColor: {}, labelColor: {}".format(
+                    hex(rawDataColor), hex(labelColor))
+
+                # Show labels
+                labelLayer.visible = True
+                # Select the eraser and brush size
+                gui.currentGui()._labelControlUi.eraserToolButton.click()
+                gui.currentGui()._labelControlUi.brushSizeComboBox.setCurrentIndex(3)
+                self.waitForViews([imgView])
+
+                # Erase and verify
+                self.strokeMouseFromCenter(imgView, self.LABEL_START, self.LABEL_STOP)
+                self.waitForViews([imgView])
+                erasedColor = self.getPixelColor(imgView, self.LABEL_SAMPLE)
+                assert erasedColor == rawDataColor, "Eraser did not remove labels! Expected {}, got {}".format(
+                    hex(rawDataColor), hex(erasedColor))
+
             # Let the GUI catch up: Process all events
             QApplication.processEvents()
 
@@ -299,8 +333,8 @@ class TestPixelClassificationGuiMultiImage(ShellGuiTestCaseBase):
         self.exec_in_shell(impl)
 
 if __name__ == "__main__":
-    from tests.helpers.shellGuiTestCaseBase import run_shell_nosetest
-    run_shell_nosetest(__file__)
+    from tests.helpers.shellGuiTestCaseBase import run_shell_test
+    run_shell_test(__file__)
 
 
 

@@ -60,13 +60,13 @@ class EdgeTrainingWithMulticutWorkflow(Workflow):
     def imageNameListSlot(self):
         return self.dataSelectionApplet.topLevelOperator.ImageName
 
-    def __init__(self, shell, headless, workflow_cmdline_args, project_creation_workflow, *args, **kwargs):
+    def __init__(self, shell, headless, workflow_cmdline_args, project_creation_args, *args, **kwargs):
         self.stored_classifier = None
 
         # Create a graph to be shared by all operators
         graph = Graph()
 
-        super(EdgeTrainingWithMulticutWorkflow, self).__init__( shell, headless, workflow_cmdline_args, project_creation_workflow, graph=graph, *args, **kwargs)
+        super(EdgeTrainingWithMulticutWorkflow, self).__init__( shell, headless, workflow_cmdline_args, project_creation_args, graph=graph, *args, **kwargs)
         self._applets = []
 
         # -- DataSelection applet
@@ -85,7 +85,7 @@ class EdgeTrainingWithMulticutWorkflow(Workflow):
         # 
         self.edgeTrainingWithMulticutApplet = EdgeTrainingWithMulticutApplet(self, "Training and Multicut", "Training and Multicut")
         opEdgeTrainingWithMulticut = self.edgeTrainingWithMulticutApplet.topLevelOperator
-        DEFAULT_FEATURES = { self.ROLE_NAMES[self.DATA_ROLE_RAW]: ['standard_edge_mean'] }
+        DEFAULT_FEATURES = { self.ROLE_NAMES[self.DATA_ROLE_RAW]: ["standard_edge_mean"] }
         opEdgeTrainingWithMulticut.FeatureNames.setValue( DEFAULT_FEATURES )
 
         # -- DataExport applet
@@ -129,7 +129,7 @@ class EdgeTrainingWithMulticutWorkflow(Workflow):
             self._data_export_args = None
 
         if unused_args:
-            logger.warn("Unused command-line args: {}".format( unused_args ))
+            logger.warning("Unused command-line args: {}".format( unused_args ))
         
         if not self._headless:
             shell.currentAppletChanged.connect( self.handle_applet_changed )
@@ -185,14 +185,16 @@ class EdgeTrainingWithMulticutWorkflow(Workflow):
         opConvertProbabilities.Input.connect( opDataSelection.ImageGroup[self.DATA_ROLE_PROBABILITIES] )
 
         # PROBABILITIES: Normalize drange to [0.0, 1.0]
-        opNormalizeProbabilities = OpPixelOperator( parent=self )
+        opNormalizeProbabilities = OpPixelOperator(parent=self)
+
         def normalize_inplace(a):
-            drange = opNormalizeProbabilities.Input.meta.drange
+            drange = opConvertProbabilities.Output.meta.drange
             if drange is None or (drange[0] == 0.0 and drange[1] == 1.0):
                 return a
             a[:] -= drange[0]
-            a[:] /= ( drange[1] - drange[0] )
+            a[:] = a[:] / float((drange[1] - drange[0]))
             return a
+
         opNormalizeProbabilities.Input.connect( opConvertProbabilities.Output )
         opNormalizeProbabilities.Function.setValue( normalize_inplace )
 
@@ -243,7 +245,7 @@ class EdgeTrainingWithMulticutWorkflow(Workflow):
         opDataExport.Inputs.resize( len(self.EXPORT_NAMES) )
         opDataExport.Inputs[0].connect( opEdgeTrainingWithMulticut.Output )
         for slot in opDataExport.Inputs:
-            assert slot.partner is not None
+            assert slot.upstream_slot is not None
         
     def onProjectLoaded(self, projectManager):
         """
@@ -326,7 +328,17 @@ class EdgeTrainingWithMulticutWorkflow(Workflow):
         opTraining.FreezeClassifier.setValue(self.freeze_classifier_status)
         opTraining.FreezeCache.setValue(self.freeze_cache_status)
 
+    def _inputReady(self, nRoles):
+        slot = self.dataSelectionApplet.topLevelOperator.ImageGroup
+        if len(slot) > 0:
+            input_ready = True
+            for sub in slot:
+                input_ready = input_ready and \
+                            all([sub[i].ready() for i in range(nRoles)])
+        else:
+            input_ready = False
 
+        return input_ready
     def handleAppletStateUpdateRequested(self):
         """
         Overridden from Workflow base class
@@ -338,8 +350,7 @@ class EdgeTrainingWithMulticutWorkflow(Workflow):
         opDataExport = self.dataExportApplet.topLevelOperator
 
         # If no data, nothing else is ready.
-        input_ready = len(opDataSelection.ImageGroup) > 0 and not self.dataSelectionApplet.busy
-
+        input_ready = self._inputReady(2) and not self.dataSelectionApplet.busy
         superpixels_available_from_file = False
         lane_index = self._shell.currentImageIndex
         if lane_index != -1:

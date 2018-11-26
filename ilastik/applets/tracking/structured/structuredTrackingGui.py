@@ -2,6 +2,7 @@ from __future__ import division
 from builtins import range
 from past.utils import old_div
 from PyQt5 import uic, QtWidgets, QtCore
+from PyQt5.QtGui import QColor
 
 import os
 import logging
@@ -29,28 +30,17 @@ from ilastik.utility.progress import DefaultProgressVisitor
 logger = logging.getLogger(__name__)
 traceLogger = logging.getLogger('TRACE.' + __name__)
 
-try:
-    import hytra
-    WITH_HYTRA = True
-except ImportError as e:
-    WITH_HYTRA = False
+import hytra
 
-if WITH_HYTRA:
-    # Import solvers for HyTra
-    import dpct
+# Import solvers for HyTra
+import dpct
+try:
+    import multiHypoTracking_with_cplex as mht
+except ImportError:
     try:
-        import multiHypoTracking_with_cplex as mht
+        import multiHypoTracking_with_gurobi as mht
     except ImportError:
-        try:
-            import multiHypoTracking_with_gurobi as mht
-        except ImportError:
-            logger.warning("Could not find any ILP solver")
-else:
-    # Try to import pgmlink for backward compatibility with old pipeline
-    try:
-        import pgmlink
-    except:
-        import pgmlinkNoIlpSolver as pgmlink
+        logger.warning("Could not find any ILP solver")
 
 class StructuredTrackingGui(TrackingBaseGui, ExportingGui):
     
@@ -144,9 +134,6 @@ class StructuredTrackingGui(TrackingBaseGui, ExportingGui):
         return self._drawer
 
     def initAppletDrawerUi(self):
-        self._previousCrop = -1
-        self._currentCrop = -1
-        self._currentCropName = ""
         self._maxNearestNeighbors = 1
 
         super(StructuredTrackingGui, self).initAppletDrawerUi()
@@ -199,7 +186,7 @@ class StructuredTrackingGui(TrackingBaseGui, ExportingGui):
             self._drawer.merg7]
 
         for i in range(len(self.mergerLabels)):
-            self._labelSetStyleSheet(self.mergerLabels[i], self.mergerColors[i+1])
+            self._labelSetStyleSheet(self.mergerLabels[i], QColor(self.mergerColors[i+1]))
         
         self._drawer.maxObjectsBox.valueChanged.connect(self._onMaxObjectsBoxChanged)
         self._drawer.mergerResolutionBox.stateChanged.connect(self._onMaxObjectsBoxChanged)
@@ -232,15 +219,18 @@ class StructuredTrackingGui(TrackingBaseGui, ExportingGui):
         self._maxNumObj = self.topLevelOperatorView.MaxNumObj.value
         self._drawer.maxObjectsBox.setValue(self.topLevelOperatorView.MaxNumObj.value)
         self._onMaxObjectsBoxChanged()
-        self._drawer.maxObjectsBox.setReadOnly(True)
+        self._drawer.maxObjectsBox.setReadOnly(False)
 
         self.topLevelOperatorView.Labels.notifyReady( bind(self._updateLabelsFromOperator) )
         self.topLevelOperatorView.Divisions.notifyReady( bind(self._updateDivisionsFromOperator) )
+        self.topLevelOperatorView.Appearances.notifyReady( bind(self._updateAppearancesFromOperator) )
+        self.topLevelOperatorView.Disappearances.notifyReady( bind(self._updateDisappearancesFromOperator) )
 
         self.operator.labels = self.operator.Labels.value
-        self.topLevelOperatorView._updateCropsFromOperator()
+        self.operator.appearances = self.operator.Appearances.value
+        self.operator.disappearances = self.operator.Disappearances.value
 
-        self._drawer.exportButton.setVisible(True)
+        self._drawer.exportButton.setVisible(False)
         self._drawer.exportTifButton.setVisible(False)
 
         self.topLevelOperatorView._detectionWeight = self._detectionWeight
@@ -256,33 +246,39 @@ class StructuredTrackingGui(TrackingBaseGui, ExportingGui):
         if 'solver' in parameters.keys() and parameters['solver'] in availableSolvers:
             self._drawer.solverComboBox.setCurrentIndex(availableSolvers.index(parameters['solver']))
 
+        # listen on the main operator's NumLabels slot for changes, and adjust the max value of the "maxNumObjects" box
+        self.topLevelOperatorView.NumLabels.notifyDirty(self._updateMaxObjectsBoxMaxValue)
+        self._updateMaxObjectsBoxMaxValue()
+
         return self._drawer
+
+    @threadRouted
+    def _updateMaxObjectsBoxMaxValue(self, *args, **kwargs):
+        if self.topLevelOperatorView.NumLabels.ready():
+            if self.topLevelOperatorView.NumLabels.value > 1:
+                self._drawer.maxObjectsBox.setMaximum(self.topLevelOperatorView.NumLabels.value - 1)
+                self._drawer.maxObjectsBox.setValue(self.topLevelOperatorView.NumLabels.value - 1)
+                self._drawer.TrackButton.setEnabled(True)
+            else:
+                self._drawer.maxObjectsBox.setMaximum(0)
+                self._drawer.maxObjectsBox.setValue(0)
+                self._drawer.TrackButton.setEnabled(False)
 
     @staticmethod
     def getAvailableTrackingSolverTypes():
         solvers = []
-        if WITH_HYTRA:
-            try:
-                if dpct:
-                    solvers.append('Flow-based')
-            except Exception as e:
-                logger.info(str(e))
+        try:
+            if dpct:
+                solvers.append('Flow-based')
+        except Exception as e:
+            logger.info(str(e))
 
-            try:
-                if mht:
-                    solvers.append('ILP')
-            except Exception as e:
-                logger.info(str(e))
+        try:
+            if mht:
+                solvers.append('ILP')
+        except Exception as e:
+            logger.info(str(e))
 
-        else:
-            if hasattr(pgmlink.ConsTrackingSolverType, "CplexSolver"):
-                solvers.append("ILP")
-
-            if hasattr(pgmlink.ConsTrackingSolverType, "DynProgSolver"):
-                solvers.append("Magnusson")
-
-            if hasattr(pgmlink.ConsTrackingSolverType, "FlowSolver"):
-                solvers.append("Flow-based")
         return solvers
 
     def _onOnesButtonPressed(self):
@@ -414,6 +410,14 @@ class StructuredTrackingGui(TrackingBaseGui, ExportingGui):
     def _updateDivisionsFromOperator(self):
         self.operator.divisions = self.topLevelOperatorView.Divisions.wait()
 
+    @threadRouted
+    def _updateAppearancesFromOperator(self):
+        self.operator.appearances = self.topLevelOperatorView.Appearances.wait()
+
+    @threadRouted
+    def _updateDisappearancesFromOperator(self):
+        self.operator.disappearances = self.topLevelOperatorView.Disappearances.wait()
+
     def getLabel(self, time, track):
         for label in list(self.operator.labels[time].keys()):
             if self.operator.labels[time][label] == set([track]):
@@ -426,24 +430,25 @@ class StructuredTrackingGui(TrackingBaseGui, ExportingGui):
             self._criticalMessage("You have to compute object features first.")
             return
 
-        numStages = 4
+        numStages = 6
+        # object features
+        # detection probabilities
         # creating traxel store
         # generating probabilities
         # insert energies
         # structured learning
+        if self._drawer.divisionsBox.isChecked():
+            # division probabilities
+            numStages +=1
 
-        if WITH_HYTRA:
-            self.progressWindow = TrackProgressDialog(parent=self,numStages=numStages)
-            self.progressWindow.run()
-            self.progressWindow.show()
-            self.progressVisitor = GuiProgressVisitor(progressWindow=self.progressWindow)
-        else:
-            self.progressWindow = None
-            self.progressVisitor = DefaultProgressVisitor()
-
+        self.progressWindow = TrackProgressDialog(parent=self,numStages=numStages)
+        self.progressWindow.run()
+        self.progressWindow.show()
+        self.progressVisitor = GuiProgressVisitor(progressWindow=self.progressWindow)
+        
         def _learn():
             self.applet.busy = True
-            self.applet.appletStateUpdateRequested.emit()
+            self.applet.appletStateUpdateRequested()
             try:
                 self.topLevelOperatorView._runStructuredLearning(
                     (self._drawer.from_z.value(),self._drawer.to_z.value()),
@@ -468,11 +473,11 @@ class StructuredTrackingGui(TrackingBaseGui, ExportingGui):
 
         def _handle_finished(*args):
             self.applet.busy = False
-            self.applet.appletStateUpdateRequested.emit()
+            self.applet.appletStateUpdateRequested()
 
         def _handle_failure( exc, exc_info ):
             self.applet.busy = False
-            self.applet.appletStateUpdateRequested.emit()
+            self.applet.appletStateUpdateRequested()
             traceback.print_exception(*exc_info)
             sys.stderr.write("Exception raised during learning.  See traceback above.\n")
 
@@ -504,18 +509,14 @@ class StructuredTrackingGui(TrackingBaseGui, ExportingGui):
         if withTracklets:
             numStages += 3 # initializing tracklet graph, finding tracklets, contracting edges in tracklet graph
 
-        if WITH_HYTRA:
-            self.progressWindow = TrackProgressDialog(parent=self,numStages=numStages)
-            self.progressWindow.run()
-            self.progressWindow.show()
-            self.progressVisitor = GuiProgressVisitor(progressWindow=self.progressWindow)
-        else:
-            self.progressWindow = None
-            self.progressVisitor = DefaultProgressVisitor()
+        self.progressWindow = TrackProgressDialog(parent=self,numStages=numStages)
+        self.progressWindow.run()
+        self.progressWindow.show()
+        self.progressVisitor = GuiProgressVisitor(progressWindow=self.progressWindow)
 
         def _track():
             self.applet.busy = True
-            self.applet.appletStateUpdateRequested.emit()
+            self.applet.appletStateUpdateRequested()
             maxDist = self._drawer.maxDistBox.value()
             maxObj = self._drawer.maxObjectsBox.value()        
             divThreshold = self._drawer.divThreshBox.value()
@@ -596,6 +597,7 @@ class StructuredTrackingGui(TrackingBaseGui, ExportingGui):
                     progressVisitor=self.progressVisitor
                 )
             except Exception:
+                self.progressWindow.onTrackDone()
                 ex_type, ex, tb = sys.exc_info()
                 traceback.print_tb(tb)
                 self._criticalMessage("Exception(" + str(ex_type) + "): " + str(ex))
@@ -603,7 +605,7 @@ class StructuredTrackingGui(TrackingBaseGui, ExportingGui):
         
         def _handle_finished(*args):
             self.applet.busy = False
-            self.applet.appletStateUpdateRequested.emit()
+            self.applet.appletStateUpdateRequested()
             self._drawer.TrackButton.setEnabled(True)
             self._drawer.exportButton.setEnabled(True)
             self._drawer.exportTifButton.setEnabled(True)
@@ -611,7 +613,7 @@ class StructuredTrackingGui(TrackingBaseGui, ExportingGui):
             
         def _handle_failure( exc, exc_info ):
             self.applet.busy = False
-            self.applet.appletStateUpdateRequested.emit()
+            self.applet.appletStateUpdateRequested()
             traceback.print_exception(*exc_info)
             sys.stderr.write("Exception raised during tracking.  See traceback above.\n")
             self._drawer.TrackButton.setEnabled(True)
@@ -623,12 +625,6 @@ class StructuredTrackingGui(TrackingBaseGui, ExportingGui):
         req.notify_failed( _handle_failure )
         req.notify_finished( _handle_finished )
         req.submit()
-
-    def menus(self):
-        m = QtWidgets.QMenu("&Export", self.volumeEditorWidget)
-        m.addAction("Export Tracking Information").triggered.connect(self.show_export_dialog)
-
-        return [m]
 
     def get_raw_shape(self):
         return self.topLevelOperatorView.RawImage.meta.shape
@@ -754,6 +750,7 @@ class StructuredTrackingGui(TrackingBaseGui, ExportingGui):
             color = hypothesesGraph.getLineageId(time, obj)
             track = hypothesesGraph.getTrackId(time, obj)
 
+        tracks = None
         children = None
         parents = None
 

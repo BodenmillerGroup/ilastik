@@ -18,7 +18,6 @@
 # on the ilastik web site at:
 #		   http://ilastik.org/license.html
 ###############################################################################
-import sys
 import logging
 logger = logging.getLogger(__name__)
 
@@ -30,6 +29,7 @@ from ilastik.applets.dataExport.dataExportApplet import DataExportApplet
 from ilastik.applets.batchProcessing import BatchProcessingApplet
 
 RAW_DATA_ROLE_INDEX = 0
+
 
 class DataConversionWorkflow(Workflow):
     """
@@ -64,10 +64,12 @@ class DataConversionWorkflow(Workflow):
         self._applets = []
 
         # Instantiate DataSelection applet
-        self.dataSelectionApplet = DataSelectionApplet(self, 
-                                                       "Input Data", 
-                                                       "Input Data", 
-                                                       supportIlastik05Import=True)
+        self.dataSelectionApplet = DataSelectionApplet(
+            self,
+            "Input Data",
+            "Input Data",
+            supportIlastik05Import=True,
+            forceAxisOrder=None)
 
         # Configure global DataSelection settings
         role_names = ["Input Data"]
@@ -112,7 +114,7 @@ class DataConversionWorkflow(Workflow):
             self._data_export_args = None
 
         if unused_args:
-            logger.warn("Unused command-line args: {}".format( unused_args ))
+            logger.warning("Unused command-line args: {}".format( unused_args ))
 
     @property
     def applets(self):

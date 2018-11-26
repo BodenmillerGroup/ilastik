@@ -35,7 +35,7 @@ from lazyflow.request import Request, RequestPool
 from lazyflow.stype import Opaque
 from lazyflow.rtype import List, SubRegion
 from lazyflow.roi import roiToSlice, sliceToRoi
-from lazyflow.operators import OpLabelVolume, OpCompressedCache, OpArrayCache
+from lazyflow.operators import OpLabelVolume, OpCompressedCache, OpBlockedArrayCache
 from itertools import groupby, count
 
 import logging
@@ -45,7 +45,7 @@ logger = logging.getLogger(__name__)
 try:
     from ilastik.plugins import pluginManager
 except:
-    logger.warn('could not import pluginManager')
+    logger.warning('could not import pluginManager')
 
 from ilastik.applets.base.applet import DatasetConstraintError
 
@@ -107,7 +107,7 @@ def make_bboxes(binary_bbox, margin):
     passed = numpy.asarray(dt < max_margin).astype(numpy.bool)
 
     # context only
-    context = numpy.asarray(passed) - numpy.asarray(binary_bbox).astype(numpy.bool)
+    context = numpy.asarray(passed) ^ numpy.asarray(binary_bbox).astype(numpy.bool)
     return passed, context
 
 
@@ -125,9 +125,9 @@ class OpCachedRegionFeatures(Operator):
     #
     # RawImage -----   blockshape=(t,)=(1,)
     #               \                        \
-    # LabelImage ----> OpRegionFeatures ----> OpArrayCache --> Output
-    #                                                     \
-    #                                                      --> CleanBlocks
+    # LabelImage ----> OpRegionFeatures ----> OpBlockedArrayCache --> Output
+    #                                                            \
+    #                                                             --> CleanBlocks
 
     def __init__(self, *args, **kwargs):
         super(OpCachedRegionFeatures, self).__init__(*args, **kwargs)
@@ -139,7 +139,7 @@ class OpCachedRegionFeatures(Operator):
         self._opRegionFeatures.Features.connect(self.Features)
 
         # Hook up the cache.
-        self._opCache = OpArrayCache(parent=self)
+        self._opCache = OpBlockedArrayCache(parent=self)
         self._opCache.name = "OpCachedRegionFeatures._opCache"
         self._opCache.Input.connect(self._opRegionFeatures.Output)
 
@@ -163,7 +163,7 @@ class OpCachedRegionFeatures(Operator):
 
         # Every value in the regionfeatures output is cached seperately as it's own "block"
         blockshape = (1,) * len(self._opRegionFeatures.Output.meta.shape)
-        self._opCache.blockShape.setValue(blockshape)
+        self._opCache.BlockShape.setValue(blockshape)
 
     def setInSlot(self, slot, subindex, roi, value):
         assert slot == self.CacheInput
@@ -319,8 +319,9 @@ class OpObjectExtraction(Operator):
     ObjectCenterImage = OutputSlot()
 
     # the computed features.
-    # nested dictionary with format:
-    # dict[plugin_name][feature_name] = feature_value
+    # dict[time_slice][plugin_name][feature_name] = feature_value
+    # by requesting from this slot with indices, the corresponding indices will be added to the dict
+    # -> RegionFeatures[0].wait() -> {0: {...}}
     RegionFeatures = OutputSlot(stype=Opaque, rtype=List)
 
     BlockwiseRegionFeatures = OutputSlot() # For compatibility with tracking workflow, the RegionFeatures output
@@ -676,7 +677,7 @@ class OpRegionFeatures(Operator):
                 try:
                     pfeats[key] = numpy.vstack(list(v.reshape(1, -1) for v in value))
                 except:
-                    logger.warn('feature {} failed'.format(key))
+                    logger.warning('feature {} failed'.format(key))
                     del pfeats[key]
 
         # merge the global and local features

@@ -76,12 +76,12 @@ class LayerViewerGui(with_metaclass(LayerViewerGuiMetaclass, QWidget)):
     """
     Implements an applet GUI whose central widget is a VolumeEditor
     and whose layer controls simply contains a layer list widget.
-    Intended to be used as a subclass for applet GUI objects.
+    Intended to be used as a superclass for applet GUI objects.
 
     Provides: Central widget (viewer), View Menu, and Layer controls
     Provides an EMPTY applet drawer widget.  Subclasses should replace it with their own applet drawer.
     """
-    
+
     ###########################################
     ### AppletGuiInterface Concrete Methods ###
     ###########################################
@@ -115,7 +115,8 @@ class LayerViewerGui(with_metaclass(LayerViewerGuiMetaclass, QWidget)):
     ###########################################
     ###########################################
 
-    def __init__(self, parentApplet, topLevelOperatorView, additionalMonitoredSlots=[], centralWidgetOnly=False, crosshair=True):
+    def __init__(self, parentApplet, topLevelOperatorView, additionalMonitoredSlots=[], centralWidgetOnly=False,
+                 crosshair=True, is_3d_widget_visible=False):
         """
         Constructor.  **All** slots of the provided *topLevelOperatorView* will be monitored for changes.
         Changes include slot resize events, and slot ready/unready status changes.
@@ -173,7 +174,8 @@ class LayerViewerGui(with_metaclass(LayerViewerGuiMetaclass, QWidget)):
         self.saved_layer_visibilities = None
 
         self._initCentralUic()
-        self._initEditor(crosshair=crosshair)
+
+        self._initEditor(crosshair=crosshair, is_3d_widget_visible=is_3d_widget_visible)
         self.__viewerControlWidget = None
         if not centralWidgetOnly:
             self.initViewerControlUi() # Might be overridden in a subclass. Default implementation loads a standard layer widget.
@@ -218,7 +220,7 @@ class LayerViewerGui(with_metaclass(LayerViewerGuiMetaclass, QWidget)):
                     # Name the layer after the slot name.
                     if isinstance( multiLayerSlot.getRealOperator(), OpWrapSlot ):
                         # We attached an 'upleveling' operator, so look upstream for the real slot.
-                        layer.name = multiLayerSlot.getRealOperator().Input.partner.name
+                        layer.name = multiLayerSlot.getRealOperator().Input.upstream_slot.name
                     else:
                         layer.name = multiLayerSlot.name + " " + str(j)
                     layers.append(layer)
@@ -450,12 +452,6 @@ class LayerViewerGui(with_metaclass(LayerViewerGuiMetaclass, QWidget)):
             # center viewer there
             self.setViewerPos(midpos5d)
 
-            if not (self.editor.cropModel._crop_extents[0][0]  == None or self.editor.cropModel.cropZero()):
-                cropMidPos = [(b+a)//2 for [a,b] in self.editor.cropModel._crop_extents]
-                for i in range(3):
-                    self.editor.navCtrl.changeSliceAbsolute(cropMidPos[i],i)
-
-
         # Old layers are deleted if
         # (1) They are not in the new set or
         # (2) Their data has changed
@@ -553,13 +549,9 @@ class LayerViewerGui(with_metaclass(LayerViewerGuiMetaclass, QWidget)):
             self.editor.navCtrl.panSlicingViews( pos3d, [0,1,2] )
             for i in range(3):
                 self.editor.navCtrl.changeSliceAbsolute(pos3d[i],i)
-            if not (self.editor.cropModel._crop_extents[0][0]  == None or self.editor.cropModel.cropZero()):
-                cropMidPos = [(b+a)//2 for [a,b] in self.editor.cropModel._crop_extents]
-                for i in range(3):
-                    self.editor.navCtrl.changeSliceAbsolute(cropMidPos[i],i)
 
         except Exception as e:
-            logger.warn("Failed to navigate to position (%s): %s" % (pos, e))
+            logger.warning("Failed to navigate to position (%s): %s" % (pos, e))
         return
     
     def validatePos(self, pos, dims=5):
@@ -582,6 +574,7 @@ class LayerViewerGui(with_metaclass(LayerViewerGuiMetaclass, QWidget)):
             # Use an OpReorderAxes adapter to transpose the shape for us.
             op5 = OpReorderAxes( parent=slot.getRealOperator().parent )
             op5.Input.connect( slot )
+            op5.AxisOrder.setValue('txyzc')
             shape = op5.Output.meta.shape
 
             # We just needed the operator to determine the transposed shape.
@@ -625,11 +618,11 @@ class LayerViewerGui(with_metaclass(LayerViewerGuiMetaclass, QWidget)):
         localDir = os.path.split(__file__)[0]
         uic.loadUi(localDir+"/centralWidget.ui", self)
 
-    def _initEditor(self, crosshair):
+    def _initEditor(self, crosshair, is_3d_widget_visible):
         """
         Initialize the Volume Editor GUI.
         """
-        self.editor = VolumeEditor(self.layerstack, parent=self, crosshair=crosshair)
+        self.editor = VolumeEditor(self.layerstack, parent=self, crosshair=crosshair, is_3d_widget_visible=is_3d_widget_visible)
 
         # Replace the editor's navigation interpreter with one that has extra functionality
         self.clickReporter = ClickReportingInterpreter( self.editor.navInterpret, self.editor.posModel )

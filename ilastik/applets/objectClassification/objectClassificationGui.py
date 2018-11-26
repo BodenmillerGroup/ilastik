@@ -55,6 +55,7 @@ logger = logging.getLogger(__name__)
 
 from ilastik.applets.layerViewer.layerViewerGui import LayerViewerGui
 from ilastik.applets.labeling.labelingGui import LabelingGui
+from ilastik.shell.gui.iconMgr import ilastikIcons
 
 import volumina.colortables as colortables
 from volumina.api import \
@@ -117,6 +118,7 @@ class ObjectClassificationGui(LabelingGui):
     _knime_exporter = None
 
     def __init__(self, parentApplet, op):
+        self.isInitialized = False  # Need this flag in objectClassificationApplet where initialization is terminated with label selection
         self.__cleanup_fns = []
         # Tell our base class which slots to monitor
         labelSlots = LabelingGui.LabelingSlots()
@@ -158,11 +160,12 @@ class ObjectClassificationGui(LabelingGui):
         
         self.labelingDrawerUi.brushSizeCaption.setVisible(False)
 
-        self._colorTable16_forpmaps = self._createDefault16ColorColorTable()
+        self._colorTable16_forpmaps = list(colortables.default16_new)
         self._colorTable16_forpmaps[15] = QColor(Qt.black).rgba() #for objects with NaNs in features
         
         # button handlers
         self._interactiveMode = False
+        self.interactiveMode = False  # This calls the setter function: interactiveMode(self, val)
         self._showPredictions = False
         self._labelMode = True
 
@@ -170,12 +173,16 @@ class ObjectClassificationGui(LabelingGui):
             self.handleSubsetFeaturesClicked)
         self.labelingDrawerUi.labelAssistButton.clicked.connect(
             self.handleLabelAssistClicked)
-        self.labelingDrawerUi.checkInteractive.toggled.connect(
-            self.handleInteractiveModeClicked)
-        self.labelingDrawerUi.checkShowPredictions.toggled.connect(
-            self.handleShowPredictionsClicked)
 
-        #select all the features in the beginning
+        self.labelingDrawerUi.liveUpdateButton.setEnabled(False)
+        self.labelingDrawerUi.liveUpdateButton.setIcon(QIcon(ilastikIcons.Play))
+        self.labelingDrawerUi.liveUpdateButton.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.labelingDrawerUi.liveUpdateButton.toggled.connect(self.handleInteractiveModeClicked)
+
+        # Always force at least two labels because it makes no sense to have less here
+        self.forceAtLeastTwoLabels(True)
+
+        # select all the features in the beginning
         cfn = None
         already_selected = None
         if self.op.ComputedFeatureNames.ready():
@@ -258,7 +265,7 @@ class ObjectClassificationGui(LabelingGui):
     def interactiveMode(self, val):
         logger.debug("setting interactive mode to '%r'" % val)
         self._interactiveMode = val
-        self.labelingDrawerUi.checkInteractive.setChecked(val)
+        self.labelingDrawerUi.liveUpdateButton.setChecked(val)
         if val:
             self.showPredictions = True
         self.labelMode = not val
@@ -266,7 +273,7 @@ class ObjectClassificationGui(LabelingGui):
 
     @pyqtSlot()
     def handleInteractiveModeClicked(self):
-        self.interactiveMode = self.labelingDrawerUi.checkInteractive.isChecked()
+        self.interactiveMode = self.labelingDrawerUi.liveUpdateButton.isChecked()
 
     @property
     def showPredictions(self):
@@ -275,7 +282,6 @@ class ObjectClassificationGui(LabelingGui):
     @showPredictions.setter
     def showPredictions(self, val):
         self._showPredictions = val
-        self.labelingDrawerUi.checkShowPredictions.setChecked(val)
         for layer in self.layerstack:
             if "Prediction" in layer.name:
                 layer.visible = val
@@ -399,14 +405,13 @@ class ObjectClassificationGui(LabelingGui):
             self.showPredictions = False
 
         self.labelingDrawerUi.subsetFeaturesButton.setEnabled(feats_enabled)
-        self.labelingDrawerUi.checkInteractive.setEnabled(predict_enabled)
-        self.labelingDrawerUi.checkShowPredictions.setEnabled(predict_enabled)
         self.labelingDrawerUi.AddLabelButton.setEnabled(labels_enabled)
+        self.labelingDrawerUi.liveUpdateButton.setEnabled(predict_enabled)
         self.labelingDrawerUi.labelListView.allowDelete = ( True and self.op.AllowDeleteLabels([]).wait()[0] )
         self.allowDeleteLastLabelOnly(False or self.op.AllowDeleteLastLabelOnly([]).wait()[0])
 
         self.op._predict_enabled = predict_enabled
-        self.applet.appletStateUpdateRequested.emit()
+        self.applet.appletStateUpdateRequested()
 
     def initAppletDrawerUi(self):
         """
@@ -487,6 +492,9 @@ class ObjectClassificationGui(LabelingGui):
         if self._programmaticallyRemovingLabels:
             return
 
+        # Base class
+        super(ObjectClassificationGui, self)._onLabelRemoved(parent, start, end)
+        '''
         # update the pmap colors. copied from labelingGui._onLabelRemoved
         # Remove the deleted label's color from the color table so that renumbered labels keep their colors.
         oldcount = self._labelControlUi.labelListModel.rowCount() + 1
@@ -498,10 +506,7 @@ class ObjectClassificationGui(LabelingGui):
         layer_index = self.layerstack.findMatchingIndex(lambda x: x.name == self.PREDICTION_LAYER_NAME)
         predictLayer = self.layerstack[layer_index]
         predictLayer.colorTable = self._colorTable16_forpmaps
-
-        # Base class
-        super(ObjectClassificationGui, self)._onLabelRemoved(parent, start, end)
-
+        '''
         op = self.topLevelOperatorView
         op.removeLabel(start)
         # Keep colors in sync with names
@@ -513,7 +518,11 @@ class ObjectClassificationGui(LabelingGui):
                 # Force dirty propagation even though the list id is unchanged.
                 slot.setValue(value, check_changed=False)
 
-        
+    def _clearLabelListGui(self):
+        """Remove rows until we have the right number"""
+        while self._labelControlUi.labelListModel.rowCount() > 2:
+            self._removeLastLabel()
+
     def createLabelLayer(self, direct=False):
         """Return a colortable layer that displays the label slot
         data, along with its associated label source.
@@ -604,10 +613,9 @@ class ObjectClassificationGui(LabelingGui):
 
             predictLayer.name = self.PREDICTION_LAYER_NAME
             predictLayer.ref_object = None
-            predictLayer.visible = self.labelingDrawerUi.checkInteractive.isChecked()
             predictLayer.opacity = 0.5
             predictLayer.setToolTip("Classification results, assigning a label to each object")
-            
+
             # This weakref stuff is a little more fancy than strictly necessary.
             # The idea is to use the weakref's callback to determine when this layer instance is destroyed by the garbage collector,
             #  and then we disconnect the signal that updates that layer.
@@ -647,6 +655,25 @@ class ObjectClassificationGui(LabelingGui):
             objLayer.visible = False
             objLayer.setToolTip("Segmented objects (labeled image/connected components)")
             layers.append(objLayer)
+
+        uncertaintySlot = self.op.UncertaintyEstimateImage
+        if uncertaintySlot.ready():
+            uncertaintySrc = LazyflowSource(uncertaintySlot)
+            uncertaintyLayer = AlphaModulatedLayer( uncertaintySrc,
+                                                    tintColor=QColor( Qt.cyan ),
+                                                    range=(0.0, 1.0),
+                                                    normalize=(0.0, 1.0) )
+            uncertaintyLayer.name = "Uncertainty"
+            uncertaintyLayer.visible = False
+            uncertaintyLayer.opacity = 1.0
+            ActionInfo = ShortcutManager.ActionInfo
+            uncertaintyLayer.shortcutRegistration = ( "u", ActionInfo( "Uncertainty Layers",
+                                                                       "Uncertainty",
+                                                                       "Show/Hide Uncertainty",
+                                                                       uncertaintyLayer.toggleVisible,
+                                                                       self.viewerControlWidget(),
+                                                                       uncertaintyLayer ) )
+            layers.append(uncertaintyLayer)
 
         if binarySlot.ready():
             ct_binary = [0,
@@ -707,12 +734,14 @@ class ObjectClassificationGui(LabelingGui):
         self._setPredictionColorTableForRow(predictLayer, row)
 
     def _setPredictionColorTableForRow(self, predictLayer, row):
+
         if row >= 0 and row < self._labelControlUi.labelListModel.rowCount():
             element = self._labelControlUi.labelListModel[row]
             oldcolor = self._colorTable16_forpmaps[row+1]
             if oldcolor != element.pmapColor().rgba():
                 self._colorTable16_forpmaps[row+1] = element.pmapColor().rgba()
                 predictLayer.colorTable = self._colorTable16_forpmaps
+
 
     @staticmethod
     def _getObject(slot, pos5d):
@@ -824,7 +853,14 @@ class ObjectClassificationGui(LabelingGui):
                 print( "probabilities:  {}".format(prob) )
                 print( "prediction:     {}".format(pred) )
 
-            
+                uncertainty = 'none'
+                if self.op.UncertaintyEstimate.ready():
+                    uncertainties = self.op.UncertaintyEstimate([t]).wait()[t]
+                    if len(uncertainties) >= obj:
+                        uncertainty = uncertainties[obj]
+
+                print( "uncertainty:    {}".format(uncertainty) )
+
             print( "------------------------------------------------------------" )
         elif action.text()==clearlabel:
             topLevelOp = self.topLevelOperatorView.viewed_operator()
@@ -835,13 +871,13 @@ class ObjectClassificationGui(LabelingGui):
         elif self.applet.connected_to_knime: 
             if action.text()==knime_hilite:
                 data = {'command': 0, 'objectid': 'Row'+str(obj)}
-                self.applet.sendMessageToServer.emit('knime', data)
+                self.applet.sendMessageToServer('knime', data)
             elif action.text()==knime_unhilite:
                 data = {'command': 1, 'objectid': 'Row'+str(obj)}
-                self.applet.sendMessageToServer.emit('knime', data)
+                self.applet.sendMessageToServer('knime', data)
             elif action.text()==knime_clearhilite:
                 data = {'command': 2}
-                self.applet.sendMessageToServer.emit('knime', data)
+                self.applet.sendMessageToServer('knime', data)
         
         else:
             try:
@@ -909,7 +945,7 @@ class ObjectClassificationGui(LabelingGui):
         warning = self.op.Warnings[:].wait()
 
         # log the warning message in any case
-        logger.warn(warning['text'])
+        logger.warning(warning['text'])
 
         # create dialog only once to prevent a pop-up window cascade
         if self.badObjectBox is None:
@@ -936,10 +972,11 @@ class ObjectClassificationGui(LabelingGui):
 class QTableWidgetItemWithFloatSorting(QTableWidgetItem):
     def __lt__(self, other):
         if ( isinstance(other, QTableWidgetItem) ):
-            my_value, my_ok = self.data(Qt.EditRole).toFloat()
-            other_value, other_ok = other.data(Qt.EditRole).toFloat()
 
-            if ( my_ok and other_ok ):
+            my_value = float(self.data(Qt.EditRole))
+            other_value = float(other.data(Qt.EditRole))
+
+            if ( my_value is not None and other_value is not None ):
                 return my_value < other_value
 
         return super(QTableWidgetItemWithFloatSorting, self).__lt__(other)
@@ -1101,7 +1138,7 @@ class LabelAssistDialog(QDialog):
         
         # Sort by max object area
         self.table.setSortingEnabled(True)                         
-        self.table.sortByColumn(1) 
+        self.table.sortByColumn(1, Qt.DescendingOrder)
         
 
     def _captureDoubleClick(self):
@@ -1139,4 +1176,4 @@ class BadObjectsDialog(QMessageBox):
             if len(s) > 0:
                 parts.append(s)
         msg = "\n".join(parts)
-        logger.warn(msg)
+        logger.warning(msg)

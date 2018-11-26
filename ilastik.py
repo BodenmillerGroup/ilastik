@@ -53,7 +53,7 @@ def _clean_paths( ilastik_dir ):
         # (gurobi and CPLEX are supposed to be located there as well)
         path = [k for k in os.environ['LD_LIBRARY_PATH'] if k.startswith(ilastik_dir)]
         
-        for k in ['/lib/vtk-5.10', '/lib']:
+        for k in ['/lib']:
             path.append(ilastik_dir + k.replace('/', os.path.sep))
         os.environ['LD_LIBRARY_PATH'] = os.pathsep.join(reversed(path))
 
@@ -105,12 +105,13 @@ def main():
     #parsed_args.workflow = 'Object Classification (from pixel classification)'
     #parsed_args.workflow = 'Carving'
 
-    ilastik_main.main(parsed_args, workflow_cmdline_args)
+    hShell = ilastik_main.main(parsed_args, workflow_cmdline_args)
+    # in headless mode the headless shell is returned and its project manager still has an open project file
+    hShell.closeCurrentProject()
 
 if __name__ == "__main__":
     # Examples:
     # python ilastik.py --headless --project=MyProject.ilp --output_format=hdf5 raw_input.h5/volumes/data
-    # python ilastik.py --playback_speed=2.0 --exit_on_failure --exit_on_success --debug --playback_script=my_recording.py
 
     ## Multicut headless test
     #sys.argv += "--headless".split()

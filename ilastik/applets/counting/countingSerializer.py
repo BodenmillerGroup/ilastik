@@ -24,11 +24,12 @@ from ilastik.applets.base.appletSerializer import \
     AppletSerializer, deleteIfPresent, SerialSlot, SerialCountingSlot, \
     SerialBlockSlot, SerialListSlot
 from lazyflow.operators.ioOperators import OpStreamingHdf5Reader, OpH5WriterBigDataset
+from lazyflow.utility.orderedSignal import OrderedSignal
 import threading
-from ilastik.utility.simpleSignal import SimpleSignal
 
 import logging
 logger = logging.getLogger(__name__)
+
 
 class SerialPredictionSlot(SerialSlot):
 
@@ -39,7 +40,7 @@ class SerialPredictionSlot(SerialSlot):
             slot, inslot, name, subname, default, depends, selfdepends
         )
         self.operator = operator
-        self.progressSignal = SimpleSignal() # Signature: emit(percentComplete)
+        self.progressSignal = OrderedSignal()
 
         self._predictionStorageEnabled = False
         self._predictionStorageRequest = None
@@ -120,7 +121,7 @@ class SerialPredictionSlot(SerialSlot):
                     # Stop sending progress if we were cancelled
                     if self.predictionStorageEnabled:
                         curprogress = progress + percent * (increment / 100.0)
-                        self.progressSignal.emit(curprogress)
+                        self.progressSignal(curprogress)
                 opWriter.progressSignal.subscribe(handleProgress)
 
                 # Create the request
@@ -187,7 +188,7 @@ class SerialBoxSlot(SerialSlot):
             slot, inslot, name, subname, default, depends, selfdepends
         )
         self.operator = operator
-        self.progressSignal = SimpleSignal() # Signature: emit(percentComplete)
+        self.progressSignal = OrderedSignal()  # Signature: __call__(percentComplete)
 
     def _serialize(self, group, name, multislot):
         #create subgroups, one for every imagelane
@@ -211,43 +212,68 @@ class SerialBoxSlot(SerialSlot):
 class CountingSerializer(AppletSerializer):
     """Encapsulate the serialization scheme for pixel classification
     workflow parameters and datasets.
-
     """
+
     def __init__(self, operator, projectFileGroupName):
-        self.predictionSlot = SerialPredictionSlot(operator.PredictionProbabilities,
-                                                   operator,
-                                                   name='Predictions',
-                                                   subname='predictions{:04d}',)
-        slots = [SerialListSlot(operator.LabelNames),
-                 SerialListSlot(operator.LabelColors, transform=lambda x: tuple(x.flat)),
-                 SerialListSlot(operator.PmapColors, transform=lambda x: tuple(x.flat)),
-                 SerialBlockSlot(operator.LabelImages,
-                                 operator.LabelInputs,
-                                 operator.NonzeroLabelBlocks,
-                                 name='LabelSets',
-                                 subname='labels{:0}',
-                                 selfdepends=False),
-                 self.predictionSlot, 
-                 SerialBoxSlot(operator.opTrain.BoxConstraintRois,operator.opTrain,
-                              name="Rois",
-                               subname="rois{:04d}"),
-                 SerialBoxSlot(operator.opTrain.BoxConstraintValues,operator.opTrain,
-                              name="Values",
-                               subname="values{:04d}"),
-                 SerialBoxSlot(operator.boxViewer.rois, operator.boxViewer,
-                              name="ViewRois",
-                              subname="viewrois{:04d}"),
-                 SerialCountingSlot(operator.Classifier,
-                                      operator.classifier_cache,
-                                      name="CountingWrappers")
-                ]
-                
+        self.predictionSlot = SerialPredictionSlot(
+            operator.PredictionProbabilities,
+            operator,
+            name='Predictions',
+            subname='predictions{:04d}',
+        )
 
+        slots = [
+            SerialListSlot(
+                operator.LabelNames,
+            ),
+            SerialListSlot(
+                operator.LabelColors,
+                transform=lambda x: tuple(x.flat),
+            ),
+            SerialListSlot(
+                operator.PmapColors,
+                transform=lambda x: tuple(x.flat),
+            ),
+            SerialBlockSlot(
+                operator.LabelImages,
+                operator.LabelInputs,
+                operator.NonzeroLabelBlocks,
+                name='LabelSets',
+                subname='labels{:0}',
+                selfdepends=False,
+            ),
+            self.predictionSlot,
+            SerialBoxSlot(
+                operator.opTrain.BoxConstraintRois,
+                operator.opTrain,
+                name='Rois',
+                subname='rois{:04d}',
+            ),
+            SerialBoxSlot(
+                operator.opTrain.BoxConstraintValues,
+                operator.opTrain,
+                name='Values',
+                subname='values{:04d}',
+            ),
+            SerialSlot(
+                operator.opTrain.Sigma,
+                name='Sigma',
+            ),
+            SerialBoxSlot(
+                operator.boxViewer.rois,
+                operator.boxViewer,
+                name='ViewRois',
+                subname='viewrois{:04d}',
+            ),
+            SerialCountingSlot(
+                operator.Classifier,
+                operator.classifier_cache,
+                name='CountingWrappers',
+            ),
+        ]
 
-        super(CountingSerializer, self).__init__(projectFileGroupName,
-                                                            slots=slots)
-
-        self.predictionSlot.progressSignal.connect(self.progressSignal.emit)
+        super(CountingSerializer, self).__init__(projectFileGroupName, slots=slots)
+        self.predictionSlot.progressSignal.subscribe(self.progressSignal)
 
     @property
     def predictionStorageEnabled(self):
@@ -261,15 +287,15 @@ class CountingSerializer(AppletSerializer):
         self.predictionSlot.cancel()
 
     def isDirty(self):
-        # Check all slots except the prediction slot
-        serialSlots = set(self.serialSlots)
-        serialSlots -= set([self.predictionSlot])
-        result = any(list(ss.dirty for ss in serialSlots))
-        
-        # Check the prediction slot, but only if prediction storage is enabled
-        result |= (self.predictionSlot.dirty and self.predictionSlot.predictionStorageEnabled)
-        
-        return result
+        for slot in self.serialSlots:
+            if slot == self.predictionSlot:
+                continue
+            if slot.dirty:
+                return True
+        if self.predictionSlot.predictionStorageEnabled:
+            return self.predictionSlot.dirty
+        return False
+
 
 class Ilastik05ImportDeserializer(AppletSerializer):
     """
@@ -286,7 +312,7 @@ class Ilastik05ImportDeserializer(AppletSerializer):
         """Not implemented. (See above.)"""
         pass
 
-    def deserializeFromHdf5(self, hdf5File, projectFilePath):
+    def deserializeFromHdf5(self, hdf5File, projectFilePath, headless=False):
         """If (and only if) the given hdf5Group is the root-level group of an
            ilastik 0.5 project, then the project is imported.  The pipeline is updated
            with the saved parameters and datasets."""
@@ -330,7 +356,7 @@ class Ilastik05ImportDeserializer(AppletSerializer):
     def _serializeToHdf5(self, topGroup, hdf5File, projectFilePath):
         assert False
 
-    def _deserializeFromHdf5(self, topGroup, groupVersion, hdf5File, projectFilePath):
+    def _deserializeFromHdf5(self, topGroup, groupVersion, hdf5File, projectFilePath, headless=False):
         # This deserializer is a special-case.
         # It doesn't make use of the serializer base class, which makes assumptions about the file structure.
         # Instead, if overrides the public serialize/deserialize functions directly

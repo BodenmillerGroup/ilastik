@@ -30,9 +30,11 @@ import vigra
 import ilastik.ilastik_logging
 ilastik.ilastik_logging.default_config.init()
 
+import unittest
 import tempfile
 
-class TestOpFeatureSelection(object):
+
+class TestOpFeatureSelection(unittest.TestCase):
     def setUp(self):
         data = numpy.random.random((2,100,100,100,3))
 
@@ -40,11 +42,11 @@ class TestOpFeatureSelection(object):
         numpy.save(self.filePath, data)
     
         graph = Graph()
-        
+
         # Define operators
-        opFeatures = OperatorWrapper( OpFeatureSelection, operator_kwargs={'filter_implementation':'Original'}, graph=graph )
+        opFeatures = OperatorWrapper(OpFeatureSelection, graph=graph)
         opReader = OpInputDataReader(graph=graph)
-        
+
         # Set input data
         opReader.FilePath.setValue( self.filePath )
         
@@ -114,7 +116,7 @@ class TestOpFeatureSelection(object):
         data2d = numpy.random.random((2,100,100,1,3))
         data2d = vigra.taggedView(data2d, axistags='txyzc')
         # Define operators
-        opFeatures = OpFeatureSelection('Original', graph=graph)
+        opFeatures = OpFeatureSelection(graph=graph)
         opFeatures.Scales.connect(self.opFeatures.Scales[0])
         opFeatures.FeatureIds.connect(self.opFeatures.FeatureIds[0])
         opFeatures.SelectionMatrix.connect(self.opFeatures.SelectionMatrix[0])
@@ -145,10 +147,3 @@ class TestOpFeatureSelection(object):
         
         assert len(dirtyRois) == 1
         assert (dirtyRois[0].start, dirtyRois[0].stop) == sliceToRoi( slice(None), self.opFeatures.OutputImage[0].meta.shape )
-
-if __name__ == "__main__":
-    import sys
-    import nose
-    sys.argv.append("--nocapture")    # Don't steal stdout.  Show it on the console as usual.
-    sys.argv.append("--nologcapture") # Don't set the logging level to DEBUG.  Leave it alone.
-    nose.run(defaultTest=__file__)

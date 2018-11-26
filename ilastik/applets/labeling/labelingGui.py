@@ -40,6 +40,7 @@ from volumina.utility import ShortcutManager, PreferencesManager
 from ilastik.shell.gui.iconMgr import ilastikIcons
 from ilastik.widgets.labelListView import Label
 from ilastik.widgets.labelListModel import LabelListModel
+from volumina import colortables
 
 # ilastik
 from ilastik.utility import bind, log_exception
@@ -133,7 +134,8 @@ class LabelingGui(LayerViewerGui):
             # Slot that gives a list of label names
             self.labelNames = None # labelNames.value
 
-    def __init__(self, parentApplet, labelingSlots, topLevelOperatorView, drawerUiPath=None, rawInputSlot=None, crosshair=True):
+    def __init__(self, parentApplet, labelingSlots, topLevelOperatorView, drawerUiPath=None, rawInputSlot=None,
+                 crosshair=True, is_3d_widget_visible=False):
         """
         Constructor.
 
@@ -144,6 +146,8 @@ class LabelingGui(LayerViewerGui):
         :param rawInputSlot: Data from the rawInputSlot parameter will be displayed directly underneath the elements
                              (if provided).
         """
+
+        self._colorTable16 = list(colortables.default16_new)
 
         # Do have have all the slots we need?
         assert isinstance(labelingSlots, LabelingGui.LabelingSlots)
@@ -163,8 +167,10 @@ class LabelingGui(LayerViewerGui):
 
         self._labelingSlots.labelNames.notifyDirty( bind(self._updateLabelList) )
         self.__cleanup_fns.append( partial( self._labelingSlots.labelNames.unregisterDirty, bind(self._updateLabelList) ) )
-        
-        self._colorTable16 = self._createDefault16ColorColorTable()
+
+
+        self._colorTable16 = colortables.default16_new
+
         self._programmaticallyRemovingLabels = False
 
         if drawerUiPath is None:
@@ -176,11 +182,13 @@ class LabelingGui(LayerViewerGui):
         super(LabelingGui, self).__init__(parentApplet,
                                           topLevelOperatorView,
                                           [labelingSlots.labelInput, labelingSlots.labelOutput],
-                                          crosshair=crosshair)
+                                          crosshair=crosshair,
+                                          is_3d_widget_visible=is_3d_widget_visible)
 
         self.__initShortcuts()
         self._labelingSlots.labelEraserValue.setValue(self.editor.brushingModel.erasingNumber)
         self._allowDeleteLastLabelOnly = False
+        self._forceAtLeastTwoLabels = False
 
         # Register for thunk events (easy UI calls from non-GUI threads)
         self.thunkEventHandler = ThunkEventHandler(self)
@@ -303,7 +311,14 @@ class LabelingGui(LayerViewerGui):
 
             #in this case, the actual data (for example color) has changed
             color = self._labelControlUi.labelListModel[firstRow].brushColor()
-            self._colorTable16[firstRow+1] = color.rgba()
+            color_value = color.rgba()
+            color_index = firstRow + 1
+            if color_index< len(self._colorTable16):
+
+                self._colorTable16[color_index] = color_value
+
+            else:
+                self._colorTable16.append(color_value)
             self.editor.brushingModel.setBrushColor(color)
 
             # Update the label layer colortable to match the list entry
@@ -622,13 +637,8 @@ class LabelingGui(LayerViewerGui):
         newRow = self._labelControlUi.labelListModel.rowCount()
         self._labelControlUi.labelListModel.insertRow( newRow, label )
 
-        if self._allowDeleteLastLabelOnly:
-            # make previous label unremovable
-            if newRow > 0:
-                self._labelControlUi.labelListModel.makeRowPermanent(newRow - 1)
-
         newColorIndex = self._labelControlUi.labelListModel.index(newRow, 0)
-        self.onLabelListDataChanged(newColorIndex, newColorIndex) # Make sure label layer colortable is in sync with the new color
+        self.onLabelListDataChanged(newColorIndex, newColorIndex)  # Make sure label layer colortable is in sync with the new color
 
         # Update operator with new name
         operator_names = self._labelingSlots.labelNames.value
@@ -641,6 +651,20 @@ class LabelingGui(LayerViewerGui):
                 # Print it out before it's too late!
                 log_exception( logger, "Logged the above exception just in case PyQt loses it." )
                 raise
+
+        if self._allowDeleteLastLabelOnly and self._forceAtLeastTwoLabels:
+            # make previous label permanent, when we have at least three labels since the first two are always permanent
+            if newRow > 2:
+                self._labelControlUi.labelListModel.makeRowPermanent(newRow - 1)
+        elif self._allowDeleteLastLabelOnly:
+            # make previous label permanent
+            if newRow > 0:
+                self._labelControlUi.labelListModel.makeRowPermanent(newRow - 1)
+        elif self._forceAtLeastTwoLabels:
+            # if a third label is added make all labels removable
+            if self._labelControlUi.labelListModel.rowCount() == 3:
+                self.labelingDrawerUi.labelListModel.makeRowRemovable(0)
+                self.labelingDrawerUi.labelListModel.makeRowRemovable(1)
 
         # Call the 'changed' callbacks immediately to initialize any listeners
         self.onLabelNameChanged()
@@ -701,8 +725,8 @@ class LabelingGui(LayerViewerGui):
     def onLabelColorChanged(self):
         """
         Subclasses can override this to respond to changes in the label colors.
+        This class gets updated before, in the _updateLabelList
         """
-        pass
     
     def onPmapColorChanged(self):
         """
@@ -738,11 +762,6 @@ class LabelingGui(LayerViewerGui):
         oldcount = self._labelControlUi.labelListModel.rowCount() + 1
         logger.debug("removing label {} out of {}".format( row, oldcount ))
 
-        if self._allowDeleteLastLabelOnly:
-            # make previous label removable again
-            if oldcount >= 2:
-                self._labelControlUi.labelListModel.makeRowRemovable(oldcount - 2)
-
         # Remove the deleted label's color from the color table so that renumbered labels keep their colors.
         oldColor = self._colorTable16.pop(row+1)
 
@@ -767,15 +786,29 @@ class LabelingGui(LayerViewerGui):
             # Changing the deleteLabel input causes the operator (OpBlockedSparseArray)
             #  to search through the entire list of labels and delete the entries for the matching label.
             self._labelingSlots.labelDelete.setValue(row+1)
-    
+
             # We need to "reset" the deleteLabel input to -1 when we're finished.
             #  Otherwise, you can never delete the same label twice in a row.
             #  (Only *changes* to the input are acted upon.)
             self._labelingSlots.labelDelete.setValue(-1)
-            
+
             labelNames = self._labelingSlots.labelNames.value
             labelNames.pop(start)
             self._labelingSlots.labelNames.setValue(labelNames, check_changed=False)
+
+        if self._forceAtLeastTwoLabels and self._allowDeleteLastLabelOnly:
+            # make previous label removable again and always leave at least two permanent labels
+            if oldcount > 3:
+                self._labelControlUi.labelListModel.makeRowRemovable(oldcount - 2)
+        elif self._allowDeleteLastLabelOnly:
+            # make previous label removable again
+            if oldcount > 1:
+                self._labelControlUi.labelListModel.makeRowRemovable(oldcount - 2)
+        elif self._forceAtLeastTwoLabels:
+            # if there are only two labels remaining make them permanent
+            if self._labelControlUi.labelListModel.rowCount() == 2:
+                self.labelingDrawerUi.labelListModel.makeRowPermanent(0)
+                self.labelingDrawerUi.labelListModel.makeRowPermanent(1)
        
     def getLayer(self, name):
         """find a layer by name"""
@@ -850,32 +883,6 @@ class LabelingGui(LayerViewerGui):
 
         return layers
 
-    @staticmethod
-    def _createDefault16ColorColorTable():
-        colors = []
-        # Transparent for the zero label
-        colors.append(QColor(0,0,0,0))
-        # ilastik v0.5 colors
-        colors.append( QColor( Qt.red ) )
-        colors.append( QColor( Qt.green ) )
-        colors.append( QColor( Qt.yellow ) )
-        colors.append( QColor( Qt.blue ) )
-        colors.append( QColor( Qt.magenta ) )
-        colors.append( QColor( Qt.darkYellow ) )
-        colors.append( QColor( Qt.lightGray ) )
-        # Additional colors
-        colors.append( QColor(255, 105, 180) ) #hot pink
-        colors.append( QColor(102, 205, 170) ) #dark aquamarine
-        colors.append( QColor(165,  42,  42) ) #brown
-        colors.append( QColor(0, 0, 128) )     #navy
-        colors.append( QColor(255, 165, 0) )   #orange
-        colors.append( QColor(173, 255,  47) ) #green-yellow
-        colors.append( QColor(128,0, 128) )    #purple
-        colors.append( QColor(240, 230, 140) ) #khaki
-        assert len(colors) == 16
-        return [c.rgba() for c in colors]
-
-
     def allowDeleteLastLabelOnly(self, enabled):
         """
         In the TrackingWorkflow when labeling 0/1/2/.../N mergers we do not allow
@@ -883,3 +890,16 @@ class LabelingGui(LayerViewerGui):
         assume that all previous cell counts are given.
         """
         self._allowDeleteLastLabelOnly = enabled
+
+    def forceAtLeastTwoLabels(self, enabled):
+        """
+        in some workflows it makes no sense to have less than two labels.
+        This setting forces to have always at least two labels.
+        If there are exaclty two, they will be made unremovable
+        """
+        self._addNewLabel()
+        self._addNewLabel()
+        self.labelingDrawerUi.labelListModel.makeRowPermanent(0)
+        self.labelingDrawerUi.labelListModel.makeRowPermanent(1)
+
+        self._forceAtLeastTwoLabels = enabled

@@ -69,13 +69,13 @@ class DatasetInfoEditorWidget(QDialog):
                              This is useful for 'repairing' dataset properties that prevented the dataset 
                              from being successfully applied to the original operator.
         """
+        assert len(laneIndexes) > 0
         super( DatasetInfoEditorWidget, self ).__init__(parent)
         self._op = topLevelOperator
         self._roleIndex = roleIndex
         self._laneIndexes = laneIndexes
-        assert len(laneIndexes) > 0
-        
         self.show_axis_details = show_axis_details
+        self.encountered_exception = None
 
         # We instantiate our own temporary operator for every input,
         # which we will use to experiment with the user's selections
@@ -197,16 +197,18 @@ class DatasetInfoEditorWidget(QDialog):
 
         # Inspect the user's changes to see if we need to warn about anything.
         closing_messages = self._getClosingMessages()
+        self.encountered_exception = self._applyTempOpSettingsRealOp()
 
-        if not self._applyTempOpSettingsRealOp():
-            return
-        else:
-            # Success.  Close the dialog.
-            for title, msg in closing_messages:
-                QMessageBox.information( self, title, msg )
-            self._tearDownEventFilters()
-            self._cleanUpTempOperators()
-            super( DatasetInfoEditorWidget, self ).accept()
+        # Close the dialog.
+        for title, msg in closing_messages:
+            QMessageBox.information(self, title, msg)
+        self._tearDownEventFilters()
+        self._cleanUpTempOperators()
+        super(DatasetInfoEditorWidget, self).accept()
+
+    def exec_(self):
+        ret = super().exec_()
+        return ret, self.encountered_exception
 
     def _getClosingMessages(self):
         closing_msgs = []
@@ -235,7 +237,7 @@ class DatasetInfoEditorWidget(QDialog):
         self._tearDownEventFilters()
         self._cleanUpTempOperators()
         super( DatasetInfoEditorWidget, self ).reject()
-    
+
     def _applyTempOpSettingsRealOp(self):
         """
         Apply the settings from our temporary operators to the real operators.
@@ -249,31 +251,56 @@ class DatasetInfoEditorWidget(QDialog):
             else:
                 originalInfos[laneIndex] = None
 
+        ret = None
         try:
             for laneIndex, op in list(self.tempOps.items()):
-                info = copy.copy( op.Dataset.value )
+                info = copy.copy(op.Dataset.value)
                 realSlot = self._op.DatasetGroup[laneIndex][self._roleIndex]
-                realSlot.setValue( info )
-            return True
-        except Exception as ex:
-            if isinstance(ex, DatasetConstraintError):
-                msg = "Failed to apply your new settings to the workflow " \
-                      "because they violate a constraint of the {} applet.\n\n".format( ex.appletName ) + \
-                      ex.message
-                log_exception( logger, msg, level=logging.INFO )
-                QMessageBox.critical( self, "Unacceptable Settings", msg )
-            else:
-                msg = "Failed to apply dialog settings due to an exception:\n"
-                msg += "{}".format( ex )
-                log_exception( logger, msg )
-                QMessageBox.critical(self, "Error", msg)
-                return False
+                realSlot.setValue(info)
+        except DatasetConstraintError as ex:
+            ret = ex
+            if hasattr(ex, 'fixing_dialogs') and ex.fixing_dialogs:
+                msg = (
+                    f"Can't use given properties for current dataset, because it violates a constraint of "
+                    f"the {ex.appletName} component.\n\n{ex.message}\n\nIf possible, fix this problem by adjusting "
+                    f"the applet settings in the next window(s).")
+                QMessageBox.warning(self, "Applet Settings Need Correction", msg)
+                for dlg in ex.fixing_dialogs:
+                    dlg()
+                try:
+                    for laneIndex, op in list(self.tempOps.items()):
+                        info = copy.copy(op.Dataset.value)
+                        realSlot = self._op.DatasetGroup[laneIndex][self._roleIndex]
+                        realSlot.setValue(info)
 
-            # Revert everything back to the previous state
-            for laneIndex, info in list(originalInfos.items()):
-                realSlot = self._op.DatasetGroup[laneIndex][self._roleIndex]
-                if realSlot is not None:
-                    realSlot.setValue( info )
+                    # fixed DatasetConstraintError and there are no other errors
+                    ret = None
+                except Exception as ex:
+                    # Maybe we fixed DatasetConstraintError, but there is still an(other) Exception
+                    ret = ex
+
+            if ret is not None:
+                # Try to revert everything back to the previous state
+                try:
+                    for laneIndex, info in list(originalInfos.items()):
+                        realSlot = self._op.DatasetGroup[laneIndex][self._roleIndex]
+                        if realSlot is not None:
+                            realSlot.setValue(info)
+                except Exception:
+                    pass
+            # msg = "Failed to apply your new settings to the workflow " \
+            #       "because they violate a constraint of the {} applet.\n\n".format( ex.appletName ) + \
+            #       ex.message
+            # log_exception(logger, msg, level=logging.INFO)
+            # QMessageBox.warning(self, "Unacceptable Settings", msg)
+        except Exception as ex:
+            ret = ex
+            msg = "Failed to apply dialog settings due to an exception:\n"
+            msg += "{}".format(ex)
+            log_exception(logger, msg)
+            QMessageBox.critical(self, "Error", msg)
+
+        return ret
 
     def _cleanUpTempOperators(self):
         for laneIndex, op in list(self.tempOps.items()):
@@ -436,12 +463,15 @@ class DatasetInfoEditorWidget(QDialog):
         newAxisOrder = str(self.axesEdit.text())
         # Check for errors
         firstOp = list(self.tempOps.values())[0]
-        shape = firstOp.Image.meta.shape
-        original_shape = firstOp.Image.meta.original_shape
-        if original_shape is not None:
-            numaxes = len(original_shape)
-        else:
-            numaxes = len(shape)
+
+        # This portion was added in order to handle the OpDataSelection adding
+        # a channel axis when encountering data without one.
+        # check if channel was added and not present in original:
+        axistags = firstOp._NonTransposedImage.meta.getOriginalAxisKeys()
+        numaxes = len(axistags)
+
+        if 'c' not in axistags and len(newAxisOrder) == numaxes + 1:
+            newAxisOrder = newAxisOrder.replace('c', '')
 
         try:
             # Remove the event filter while this function executes because we don't 

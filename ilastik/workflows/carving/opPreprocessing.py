@@ -32,13 +32,17 @@ import vigra
 #lazyflow
 from lazyflow.roi import roiFromShape
 from lazyflow.graph import Operator, InputSlot, OutputSlot
-from lazyflow.operators import OpArrayCache
+from lazyflow.operators import OpBlockedArrayCache
+
+from lazyflow.request import Request
 
 from lazyflow.utility.timer import Timer
 from ilastik.applets.base.applet import DatasetConstraintError
 
-#carving Cython module
+#carving backend in ilastiktools
 from .watershed_segmentor import WatershedSegmentor
+
+from .carvingTools import simple_parallel_ws
 
 import logging
 logger = logging.getLogger(__name__)
@@ -199,6 +203,58 @@ class OpSimpleWatershed(Operator):
 
     def propagateDirty(self, slot, subindex, roi):
         self.Output.setDirty(slice(None))
+
+class OpSimpleBlockwiseWatershed(Operator):
+    Input = InputSlot()
+    Output = OutputSlot()
+
+    DoAgglo           = InputSlot(value = 1)
+    SizeRegularizer   = InputSlot(value = 0.5)
+    ReduceTo          = InputSlot(value = 0.2)
+
+
+    def setupOutputs(self):
+        self.Output.meta.assignFrom(self.Input.meta)
+        self.Output.meta.dtype = numpy.uint32
+
+    def execute(self, slot, subindex, roi, result):
+        assert roi.stop - roi.start == self.Output.meta.shape, "Blockwise Watershed must be run on the entire volume."
+        input_image = self.Input(roi.start, roi.stop).wait()
+        volume_feat = input_image[0,...,0]
+        result_view = result[0,...,0]
+        with Timer() as watershedTimer:
+            if self.Input.meta.getTaggedShape()['z'] > 1:
+                sys.stdout.write("Blockwise Watershed 3D..."); sys.stdout.flush()
+
+                if not self.DoAgglo.value:
+                    result_view[...] = vigra.analysis.watersheds(volume_feat[...])[0].astype(numpy.int32)
+
+                else:
+                    result_view[...] = simple_parallel_ws(
+                        volume_feat,
+                        max_workers=Request.global_thread_pool.num_workers,
+                        size_regularizer=self.SizeRegularizer.value,
+                        reduce_to=self.ReduceTo.value)
+                logger.info( "done {}".format(numpy.max(result[...]) ) )
+            else:
+                if not self.DoAgglo.value:
+                    result_view[...] = vigra.analysis.watersheds(volume_feat[:,:,0])[0].astype(numpy.int32)
+                else:
+                    sys.stdout.write("Blockwise Watershed..."); sys.stdout.flush()
+                    labelVolume = simple_parallel_ws(
+                        volume_feat[:, :, 0],
+                        max_workers=Request.global_thread_pool.num_workers,
+                        size_regularizer=self.SizeRegularizer.value,
+                        reduce_to=self.ReduceTo.value)
+                    result_view[...] = labelVolume[:,:,numpy.newaxis]
+                logger.info( "done {}".format(numpy.max(labelVolume)) )
+
+        logger.info( "Blockwise Watershed took {} seconds".format( watershedTimer.seconds() ) )
+        return result
+
+    def propagateDirty(self, slot, subindex, roi):
+        self.Output.setDirty(slice(None))
+
     
 class OpMstSegmentorProvider(Operator):
     Image = InputSlot()
@@ -218,7 +274,7 @@ class OpMstSegmentorProvider(Operator):
         assert slot == self.MST, "Invalid output slot: {}".format(slot.name)
 
         #first thing, show the user that we are waiting for computations to finish
-        self.applet.progressSignal.emit(-1)
+        self.applet.progressSignal(-1)
         try:
             volume_feat = self.Image( *roiFromShape( self.Image.meta.shape ) ).wait()
             labelVolume = self.LabelImage( *roiFromShape( self.LabelImage.meta.shape ) ).wait()
@@ -227,7 +283,7 @@ class OpMstSegmentorProvider(Operator):
             def updateProgressBar(x):
                 #send signal iff progress is significant
                 if x-self.applet.progress>1 or x==100:
-                    self.applet.progressSignal.emit(x)
+                    self.applet.progressSignal(x)
                     self.applet.progress = x
 
            #mst= MSTSegmentor(labelVolume[0,...,0],
@@ -247,7 +303,7 @@ class OpMstSegmentorProvider(Operator):
             return result
 
         finally:
-            self.applet.progressSignal.emit(100)
+            self.applet.progressSignal(100)
 
     def propagateDirty(self, slot, subindex, roi):
         self.MST.setDirty(slice(None))
@@ -266,6 +322,10 @@ class OpPreprocessing(Operator):
     WatershedSource = InputSlot(value="filtered") # Choices: "raw", "input", "filtered"
     InvertWatershedSource = InputSlot(value=False)
     
+    DoAgglo           = InputSlot(value = 1)
+    SizeRegularizer   = InputSlot(value = 0.5)
+    ReduceTo          = InputSlot(value = 0.2)
+
     #Image after preprocess 
     PreprocessedData = OutputSlot()
     
@@ -295,6 +355,9 @@ class OpPreprocessing(Operator):
          
         self.initialSigma = None  # save settings of last preprocess
         self.initialFilter = None # applied to gui by pressing reset
+        self.initialDoAgglo = None
+        self.initialSizeRegularizer = None
+        self.initialReduceTo = None
         
         self._opFilter = OpFilter(parent=self)
         self._opFilter.Input.connect( self.InputData )
@@ -304,11 +367,14 @@ class OpPreprocessing(Operator):
         self._opFilterNormalize = OpNormalize255( parent=self )
         self._opFilterNormalize.Input.connect( self._opFilter.Output )
         
-        self._opFilterCache = OpArrayCache( parent=self )
+        self._opFilterCache = OpBlockedArrayCache( parent=self )
         
-        self._opWatershed = OpSimpleWatershed( parent=self )
+        self._opWatershed = OpSimpleBlockwiseWatershed( parent=self )
+        self._opWatershed.DoAgglo.connect( self.SizeRegularizer )
+        self._opWatershed.ReduceTo.connect( self.ReduceTo )
+        self._opWatershed.SizeRegularizer.connect( self.SizeRegularizer )
         
-        self._opWatershedCache = OpArrayCache( parent=self )
+        self._opWatershedCache = OpBlockedArrayCache( parent=self )
         
         self._opOverlayFilter = OpFilter( parent=self )
         self._opOverlayFilter.Input.connect( self.OverlayData )
@@ -328,7 +394,7 @@ class OpPreprocessing(Operator):
         self._opMstProvider.Image.connect( self._opFilterCache.Output )
         self._opMstProvider.LabelImage.connect( self._opWatershedCache.Output )
 
-        self._opWatershedSourceCache = OpArrayCache( parent=self )
+        self._opWatershedSourceCache = OpBlockedArrayCache( parent=self )
 
         #self.PreprocessedData.connect( self._opMstProvider.MST )
         
@@ -368,7 +434,7 @@ class OpPreprocessing(Operator):
         self.PreprocessedData.meta.shape = (1,)
         self.PreprocessedData.meta.dtype = object
 
-        self._opFilterCache.blockShape.setValue( self.InputData.meta.shape )
+        self._opFilterCache.BlockShape.setValue( self.InputData.meta.shape )
         self._opFilterCache.Input.connect( self._opFilterNormalize.Output )
 
         # If the user's boundaries are dark, then invert the special watershed sources
@@ -392,12 +458,12 @@ class OpPreprocessing(Operator):
         else:
             assert False, "Unknown Watershed source option: {}".format( ws_source )
 
-        self._opWatershedSourceCache.blockShape.setValue( self.InputData.meta.shape )
+        self._opWatershedSourceCache.BlockShape.setValue( self.InputData.meta.shape )
         self._opWatershedSourceCache.Input.connect( self._opWatershed.Input )
 
         self.WatershedSourceImage.connect( self._opWatershedSourceCache.Output )
 
-        self._opWatershedCache.blockShape.setValue( self._opWatershed.Output.meta.shape )
+        self._opWatershedCache.BlockShape.setValue( self._opWatershed.Output.meta.shape )
         self._opWatershedCache.Input.connect( self._opWatershed.Output )
 
 
@@ -411,6 +477,10 @@ class OpPreprocessing(Operator):
         #save settings for reloading them if asked by user
         self.initialSigma = self.Sigma.value
         self.initialFilter = self.Filter.value
+        self.initalDoAgglo = self.DoAgglo.value
+        self.initalReduceTo = self.ReduceTo.value
+        self.initalSizeRegularizer = self.SizeRegularizer.value
+
         self.enableReset(False)
         self._unsavedData = True
         self._dirty = False
@@ -448,7 +518,13 @@ class OpPreprocessing(Operator):
             return False        
         if self.Filter.value != self.initialFilter:
             return False
+        if self.DoAgglo.value != self.initialDoAgglo:
+            return False
         if abs(self.Sigma.value - self.initialSigma)>0.005:
+            return False
+        if abs(self.ReduceTo.value - self.initialReduceTo)>0.005:
+            return False
+        if abs(self.SizeRegularizer.value - self.initalSizeRegularizer)>0.005:
             return False
         return True
     
@@ -458,6 +534,9 @@ class OpPreprocessing(Operator):
             #No values will be reused any more
             self.initialSigma = None
             self.initialFilter = None
+            self.initialDoAgglo = None
+            self.initialSizeRegularizer = None
+            self.initialReduceTo = None
             self._prepData = [None]
         
         ws_source_changed = False
@@ -492,5 +571,6 @@ class OpPreprocessing(Operator):
         '''reset sigma and filter to values of last preprocess'''
         self.applet._gui.setSigma(self.initialSigma)
         self.applet._gui.setFilter(self.initialFilter)
+
     
 

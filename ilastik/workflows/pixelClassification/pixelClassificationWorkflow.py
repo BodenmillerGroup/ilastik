@@ -23,6 +23,7 @@ from builtins import range
 import sys
 import copy
 import argparse
+import itertools
 import logging
 logger = logging.getLogger(__name__)
 
@@ -39,16 +40,16 @@ from lazyflow.graph import Graph
 from lazyflow.roi import TinyVector, fullSlicing
 
 class PixelClassificationWorkflow(Workflow):
-    
+
     workflowName = "Pixel Classification"
     workflowDescription = "This is obviously self-explanatory."
     defaultAppletIndex = 0 # show DataSelection by default
-    
+
     DATA_ROLE_RAW = 0
     DATA_ROLE_PREDICTION_MASK = 1
     ROLE_NAMES = ['Raw Data', 'Prediction Mask']
     EXPORT_NAMES = ['Probabilities', 'Simple Segmentation', 'Uncertainty', 'Features', 'Labels']
-    
+
     @property
     def applets(self):
         return self._applets
@@ -66,7 +67,6 @@ class PixelClassificationWorkflow(Workflow):
         self._workflow_cmdline_args = workflow_cmdline_args
         # Parse workflow-specific command-line args
         parser = argparse.ArgumentParser()
-        parser.add_argument('--filter', help="pixel feature filter implementation.", choices=['Original', 'Refactored', 'Interpolated'], default='Original')
         parser.add_argument('--print-labels-by-slice', help="Print the number of labels for each Z-slice of each image.", action="store_true")
         parser.add_argument('--label-search-value', help="If provided, only this value is considered when using --print-labels-by-slice", default=0, type=int)
         parser.add_argument('--generate-random-labels', help="Add random labels to the project file.", action="store_true")
@@ -79,8 +79,7 @@ class PixelClassificationWorkflow(Workflow):
 
         # Parse the creation args: These were saved to the project file when this project was first created.
         parsed_creation_args, unused_args = parser.parse_known_args(project_creation_args)
-        self.filter_implementation = parsed_creation_args.filter
-        
+
         # Parse the cmdline args for the current session.
         parsed_args, unused_args = parser.parse_known_args(workflow_cmdline_args)
         self.print_labels_by_slice = parsed_args.print_labels_by_slice
@@ -93,16 +92,13 @@ class PixelClassificationWorkflow(Workflow):
         self.variable_importance_path = parsed_args.variable_importance_path
         self.label_proportion = parsed_args.label_proportion
 
-        if parsed_args.filter and parsed_args.filter != parsed_creation_args.filter:
-            logger.error("Ignoring new --filter setting.  Filter implementation cannot be changed after initial project creation.")
-        
         data_instructions = "Select your input data using the 'Raw Data' tab shown on the right.\n\n"\
                             "Power users: Optionally use the 'Prediction Mask' tab to supply a binary image that tells ilastik where it should avoid computations you don't need."
 
-        # Applets for training (interactive) workflow 
+        # Applets for training (interactive) workflow
         self.dataSelectionApplet = self.createDataSelectionApplet()
         opDataSelection = self.dataSelectionApplet.topLevelOperator
-        
+
         # see role constants, above
         opDataSelection.DatasetRoles.setValue( PixelClassificationWorkflow.ROLE_NAMES )
 
@@ -116,20 +112,20 @@ class PixelClassificationWorkflow(Workflow):
         opDataExport.PmapColors.connect( opClassify.PmapColors )
         opDataExport.LabelNames.connect( opClassify.LabelNames )
         opDataExport.WorkingDirectory.connect( opDataSelection.WorkingDirectory )
-        opDataExport.SelectionNames.setValue( self.EXPORT_NAMES )        
+        opDataExport.SelectionNames.setValue( self.EXPORT_NAMES )
 
         # Expose for shell
         self._applets.append(self.dataSelectionApplet)
         self._applets.append(self.featureSelectionApplet)
         self._applets.append(self.pcApplet)
         self._applets.append(self.dataExportApplet)
-        
+
         self.dataExportApplet.prepare_for_entire_export = self.prepare_for_entire_export
         self.dataExportApplet.post_process_entire_export = self.post_process_entire_export
 
-        self.batchProcessingApplet = BatchProcessingApplet(self, 
-                                                           "Batch Processing", 
-                                                           self.dataSelectionApplet, 
+        self.batchProcessingApplet = BatchProcessingApplet(self,
+                                                           "Batch Processing",
+                                                           self.dataSelectionApplet,
                                                            self.dataExportApplet)
 
         self._applets.append(self.batchProcessingApplet)
@@ -142,20 +138,26 @@ class PixelClassificationWorkflow(Workflow):
             self._batch_export_args = None
 
         if unused_args:
-            logger.warn("Unused command-line args: {}".format( unused_args ))
+            logger.warning("Unused command-line args: {}".format( unused_args ))
 
     def createDataSelectionApplet(self):
         """
-        Can be overridden by subclasses, if they want to use 
+        Can be overridden by subclasses, if they want to use
         special parameters to initialize the DataSelectionApplet.
         """
         data_instructions = "Select your input data using the 'Raw Data' tab shown on the right"
-        return DataSelectionApplet( self,
-                                    "Input Data",
-                                    "Input Data",
-                                    supportIlastik05Import=True,
-                                    instructionText=data_instructions )
+        c_at_end = ['yxc', 'xyc']
+        for perm in itertools.permutations('tzyx', 3):
+            c_at_end.append(''.join(perm) + 'c')
+        for perm in itertools.permutations('tzyx', 4):
+            c_at_end.append(''.join(perm) + 'c')
 
+        return DataSelectionApplet(self,
+                                   "Input Data",
+                                   "Input Data",
+                                   supportIlastik05Import=True,
+                                   instructionText=data_instructions,
+                                   forceAxisOrder=c_at_end)
 
     def createFeatureSelectionApplet(self):
         """
@@ -163,7 +165,7 @@ class PixelClassificationWorkflow(Workflow):
         NOTE: The applet returned here must have the same interface as the regular FeatureSelectionApplet.
               (If it looks like a duck...)
         """
-        return FeatureSelectionApplet(self, "Feature Selection", "FeatureSelections", self.filter_implementation)
+        return FeatureSelectionApplet(self, "Feature Selection", "FeatureSelections")
 
     def createPixelClassificationApplet(self):
         """
@@ -187,7 +189,7 @@ class PixelClassificationWorkflow(Workflow):
             self.stored_classifier = opPixelClassification.classifier_cache.Output.value
         else:
             self.stored_classifier = None
-        
+
     def handleNewLanesAdded(self):
         """
         Overridden from Workflow base class.
@@ -205,19 +207,19 @@ class PixelClassificationWorkflow(Workflow):
         opTrainingFeatures = self.featureSelectionApplet.topLevelOperator.getLane(laneIndex)
         opClassify = self.pcApplet.topLevelOperator.getLane(laneIndex)
         opDataExport = self.dataExportApplet.topLevelOperator.getLane(laneIndex)
-        
+
         # Input Image -> Feature Op
         #         and -> Classification Op (for display)
         opTrainingFeatures.InputImage.connect( opData.Image )
         opClassify.InputImages.connect( opData.Image )
-        
+
         if ilastik_config.getboolean('ilastik', 'debug'):
             opClassify.PredictionMasks.connect( opData.ImageGroup[self.DATA_ROLE_PREDICTION_MASK] )
-        
+
         # Feature Images -> Classification Op (for training, prediction)
         opClassify.FeatureImages.connect( opTrainingFeatures.OutputImage )
         opClassify.CachedFeatureImages.connect( opTrainingFeatures.CachedOutputImage )
-        
+
         # Data Export connections
         opDataExport.RawData.connect( opData.ImageGroup[self.DATA_ROLE_RAW] )
         opDataExport.RawDatasetInfo.connect( opData.DatasetGroup[self.DATA_ROLE_RAW] )
@@ -229,7 +231,7 @@ class PixelClassificationWorkflow(Workflow):
         opDataExport.Inputs[3].connect( opClassify.FeatureImages )
         opDataExport.Inputs[4].connect( opClassify.LabelImages )
         for slot in opDataExport.Inputs:
-            assert slot.partner is not None
+            assert slot.upstream_slot is not None
 
     def handleAppletStateUpdateRequested(self):
         """
@@ -263,10 +265,10 @@ class PixelClassificationWorkflow(Workflow):
         # Problems can occur if the features or input data are changed during live update mode.
         # Don't let the user do that.
         live_update_active = not opPixelClassification.FreezePredictions.value
-        
+
         # The user isn't allowed to touch anything while batch processing is running.
         batch_processing_busy = self.batchProcessingApplet.busy
-        
+
         self._shell.setAppletEnabled(self.dataSelectionApplet, not live_update_active and not batch_processing_busy)
         self._shell.setAppletEnabled(self.featureSelectionApplet, input_ready and not live_update_active and not batch_processing_busy)
         self._shell.setAppletEnabled(self.pcApplet, features_ready and not batch_processing_busy)
@@ -274,8 +276,8 @@ class PixelClassificationWorkflow(Workflow):
 
         if self.batchProcessingApplet is not None:
             self._shell.setAppletEnabled(self.batchProcessingApplet, predictions_ready and not batch_processing_busy)
-    
-        # Lastly, check for certain "busy" conditions, during which we 
+
+        # Lastly, check for certain "busy" conditions, during which we
         #  should prevent the shell from closing the project.
         busy = False
         busy |= self.dataSelectionApplet.busy
@@ -287,8 +289,8 @@ class PixelClassificationWorkflow(Workflow):
     def onProjectLoaded(self, projectManager):
         """
         Overridden from Workflow base class.  Called by the Project Manager.
-        
-        If the user provided command-line arguments, use them to configure 
+
+        If the user provided command-line arguments, use them to configure
         the workflow for batch mode and export all results.
         (This workflow's headless mode supports only batch mode for now.)
         """
@@ -297,7 +299,7 @@ class PixelClassificationWorkflow(Workflow):
             logger.info("Saving project...")
             self._shell.projectManager.saveProject()
             logger.info("Done.")
-        
+
         if self.print_labels_by_slice:
             self._print_labels_by_slice( self.label_search_value )
 
@@ -305,21 +307,21 @@ class PixelClassificationWorkflow(Workflow):
             # In headless mode, let's see the messages from the training operator.
             logging.getLogger("lazyflow.operators.classifierOperators").setLevel(logging.DEBUG)
 
-        if self.variable_importance_path: 
+        if self.variable_importance_path:
             classifier_factory = self.pcApplet.topLevelOperator.opTrain.ClassifierFactory.value
             classifier_factory.set_variable_importance_path( self.variable_importance_path )
-            
+
         if self.tree_count:
             classifier_factory = self.pcApplet.topLevelOperator.opTrain.ClassifierFactory.value
             classifier_factory.set_num_trees( self.tree_count )
-                        
+
         if self.label_proportion:
             classifier_factory = self.pcApplet.topLevelOperator.opTrain.ClassifierFactory.value
             classifier_factory.set_label_proportion( self.label_proportion )
-            
+
         if self.tree_count or self.label_proportion:
             self.pcApplet.topLevelOperator.ClassifierFactory.setDirty()
-            
+
         if self.retrain:
             self._force_retrain_classifier(projectManager)
 
@@ -328,7 +330,7 @@ class PixelClassificationWorkflow(Workflow):
             self.dataExportApplet.configure_operator_with_parsed_args( self._batch_export_args )
 
         if self._batch_input_args and self.pcApplet.topLevelOperator.classifier_cache._dirty:
-            logger.warn("Your project file has no classifier.  A new classifier will be trained for this run.")
+            logger.warning("Your project file has no classifier.  A new classifier will be trained for this run.")
 
         if self._headless and self._batch_input_args and self._batch_export_args:
             logger.info("Beginning Batch Processing")
@@ -354,7 +356,7 @@ class PixelClassificationWorkflow(Workflow):
         # Cause the classifier to be dirty so it is forced to retrain.
         # (useful if the stored labels were changed outside ilastik)
         self.pcApplet.topLevelOperator.opTrain.ClassifierFactory.setDirty()
-        
+
         # Request the classifier, which forces training
         self.pcApplet.topLevelOperator.FreezePredictions.setValue(False)
         _ = self.pcApplet.topLevelOperator.Classifier.value
@@ -381,7 +383,7 @@ class PixelClassificationWorkflow(Workflow):
                 for z in range(tagged_shape['z']):
                     slicing[list(tagged_shape.keys()).index('z')] = slice(z, z+1)
                     label_slice = label_slot[slicing].wait()
-                    if search_value:                        
+                    if search_value:
                         count = (label_slice == search_value).sum()
                     else:
                         count = (label_slice != 0).sum()
@@ -401,7 +403,7 @@ class PixelClassificationWorkflow(Workflow):
                 logger.info( "Total labels for Image #{}: {}".format( image_index, image_label_count ) )
         logger.info( "Total labels for project: {}".format( project_label_count ) )
 
-    
+
     def _generate_random_labels(self, labels_per_image, label_value):
         """
         Inject random labels into the project file.
@@ -409,22 +411,22 @@ class PixelClassificationWorkflow(Workflow):
         """
         logger.info( "Injecting {} labels of value {} into all images.".format( labels_per_image, label_value ) )
         opTopLevelClassify = self.pcApplet.topLevelOperator
-        
+
         label_names = copy.copy(opTopLevelClassify.LabelNames.value)
         while len(label_names) < label_value:
             label_names.append( "Label {}".format( len(label_names)+1 ) )
-        
+
         opTopLevelClassify.LabelNames.setValue( label_names )
-        
+
         for image_index in range(len(opTopLevelClassify.LabelImages)):
             logger.info( "Injecting labels into image #{}".format( image_index ) )
             # For reproducibility of label generation
             SEED = 1
             numpy.random.seed([SEED, image_index])
-        
+
             label_input_slot = opTopLevelClassify.LabelInputs[image_index]
             label_output_slot = opTopLevelClassify.LabelImages[image_index]
-        
+
             shape = label_output_slot.meta.shape
             random_labels = numpy.zeros( shape=shape, dtype=numpy.uint8 )
             num_pixels = len(random_labels.flat)
@@ -448,7 +450,7 @@ class PixelClassificationWorkflow(Workflow):
             sys.stdout.write( "100%\n" )
             # Write into the operator
             label_input_slot[fullSlicing(shape)] = random_labels
-        
+
         logger.info( "Done injecting labels" )
 
 
@@ -467,7 +469,7 @@ class PixelClassificationWorkflow(Workflow):
             return self.opBatchPredictionPipeline.HeadlessPredictionProbabilities
         if slotId == "BatchPredictionsUint8":
             return self.opBatchPredictionPipeline.HeadlessUint8PredictionProbabilities
-        
+
         raise Exception("Unknown headless output slot")
 
 

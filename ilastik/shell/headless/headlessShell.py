@@ -31,14 +31,15 @@ class HeadlessShell(object):
     """
     For now, this class is just a stand-in for the GUI shell (used when running from the command line).
     """
-    
+
     def __init__(self, workflow_cmdline_args=None):
         self._workflow_cmdline_args = workflow_cmdline_args or []
         self.projectManager = None
 
     @property
     def workflow(self):
-        return self.projectManager.workflow
+        if self.projectManager is not None:
+            return self.projectManager.workflow
 
     @property
     def currentImageIndex(self):
@@ -139,7 +140,7 @@ class HeadlessShell(object):
                                                   workflow_cmdline_args=self._workflow_cmdline_args,
                                                   project_creation_args=self._workflow_cmdline_args )
 
-            self.projectManager._importProject(importFromPath, hdf5File, projectFilePath)
+            self.projectManager._importProject(oldProjectFilePath, hdf5File, projectFilePath)
 
     def setAppletEnabled(self, applet, enabled):
         """
@@ -159,9 +160,10 @@ class HeadlessShell(object):
         pass
 
     def closeCurrentProject(self):
-        self.projectManager._closeCurrentProject()
-        self.projectManager.cleanUp()
-        self.projectManager = None
+        if self.projectManager is not None:
+            self.projectManager._closeCurrentProject()
+            self.projectManager.cleanUp()
+            self.projectManager = None
 
-assert issubclass( HeadlessShell, ShellABC ), "HeadlessShell does not satisfy the generic shell interface!"
 
+assert issubclass(HeadlessShell, ShellABC), "HeadlessShell does not satisfy the generic shell interface!"

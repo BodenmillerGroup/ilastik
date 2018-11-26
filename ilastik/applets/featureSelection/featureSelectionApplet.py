@@ -1,4 +1,3 @@
-from __future__ import absolute_import
 ###############################################################################
 #   ilastik: interactive learning and segmentation toolkit
 #
@@ -17,22 +16,23 @@ from __future__ import absolute_import
 #
 # See the LICENSE file for details. License information is also available
 # on the ilastik web site at:
-#		   http://ilastik.org/license.html
+#          http://ilastik.org/license.html
 ###############################################################################
 from ilastik.applets.base.standardApplet import StandardApplet
 from .opFeatureSelection import OpFeatureSelection
 from .featureSelectionSerializer import FeatureSelectionSerializer, Ilastik05FeatureSelectionDeserializer
 
-class FeatureSelectionApplet( StandardApplet ):
+
+class FeatureSelectionApplet(StandardApplet):
     """
-    This applet allows the user to select sets of input data, 
+    This applet allows the user to select sets of input data,
     which are provided as outputs in the corresponding top-level applet operator.
     """
-    def __init__( self, workflow, guiName, projectFileGroupName, filter_implementation='Original' ):
-        self._filter_implementation = filter_implementation
+
+    def __init__(self, workflow, guiName, projectFileGroupName):
         super(FeatureSelectionApplet, self).__init__(guiName, workflow)
-        self._serializableItems = [ FeatureSelectionSerializer(self.topLevelOperator, projectFileGroupName),
-                                    Ilastik05FeatureSelectionDeserializer(self.topLevelOperator) ]
+        self._serializableItems = [FeatureSelectionSerializer(self.topLevelOperator, projectFileGroupName),
+                                   Ilastik05FeatureSelectionDeserializer(self.topLevelOperator)]
         self.busy = False
 
     @property
@@ -40,12 +40,8 @@ class FeatureSelectionApplet( StandardApplet ):
         return OpFeatureSelection
 
     @property
-    def singleLaneOperatorInitArgs(self):
-        return ((), {'filter_implementation' : self._filter_implementation})
-
-    @property
     def broadcastingSlots(self):
-        return ['Scales', 'FeatureIds', 'SelectionMatrix']
+        return ['Scales', 'ComputeIn2d', 'FeatureIds', 'SelectionMatrix']
 
     @property
     def singleLaneGuiClass(self):
@@ -61,4 +57,3 @@ class FeatureSelectionApplet( StandardApplet ):
     @property
     def dataSerializers(self):
         return self._serializableItems
-

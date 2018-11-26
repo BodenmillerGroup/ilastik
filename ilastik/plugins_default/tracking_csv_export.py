@@ -13,18 +13,18 @@ class TrackingCSVExportFormatPlugin(TrackingExportFormatPlugin):
         ''' Check whether the files we want to export are already present '''
         return os.path.exists(filename + '.csv')
 
-    def export(self, filename, hypothesesGraph, objectFeaturesSlot, labelImageSlot, rawImageSlot):
+    def export(self, filename, hypothesesGraph, pluginExportContext):
         """
-        Export the features of all objects together with their tracking information
+        Export the features of all objects together with their tracking information into a table
 
-        :param filename: string of the FILE where to save the result (different .xml files were)
+        :param filename: string of the FILE where to save the resulting CSV file
         :param hypothesesGraph: hytra.core.hypothesesgraph.HypothesesGraph filled with a solution
-        :param objectFeaturesSlot: lazyflow.graph.InputSlot, connected to the RegionFeaturesAll output
-               of ilastik.applets.trackingFeatureExtraction.opTrackingFeatureExtraction.OpTrackingFeatureExtraction
+        :param pluginExportContext: instance of ilastik.plugins.PluginExportContext containing:
+            objectFeaturesSlot (required here) as well as labelImageSlot, rawImageSlot, additionalPluginArgumentsSlot
 
         :returns: True on success, False otherwise
         """
-        features = objectFeaturesSlot([]).wait()  # this is a dict of structure: {frame: {category: {featureNames}}}
+        features = pluginExportContext.objectFeaturesSlot([]).wait()  # this is a dict of structure: {frame: {category: {featureNames}}}
         graph = hypothesesGraph._graph
         headers = ['frame', 'labelimageId', 'trackId', 'lineageId', 'parentTrackId', 'mergerLabelId']
         formats = ['%d'] * len(headers)
@@ -51,17 +51,22 @@ class TrackingCSVExportFormatPlugin(TrackingExportFormatPlugin):
                 blockedFeatures[standardObjFeatStr].append(feature)
 
         for category in categories:
-            for feature in list(features[frame][category].keys()):
+            for feature in sorted(list(features[frame][category].keys())):
                 if feature not in excludedFeatures and feature not in blockedFeatures[category]:
                     featureName = self._getFeatureNameTranslation(category, feature).replace(' ', '_')
-                    if (np.asarray(features[frame][category][feature])).ndim == 2:
+                    ndim = (np.asarray(features[frame][category][feature])).ndim
+                    if ndim == 2:
                         for column in range(np.asarray(features[frame][category][feature]).shape[1]):
                             singleFeatureValueName = '{f}_{c}'.format(f=featureName, c=column)
                             headers.append(singleFeatureValueName)
                             appendFormat(singleFeatureValueName)
-                    else:
+                    elif ndim == 1:
                         headers.append(featureName)
                         appendFormat(featureName)
+                    elif ndim == 0:
+                        pass # ignoring "global" features
+                    else:
+                        raise ValueError(f"Found feature matrix {feature} that has a dimensionality of > 2, cannot handle that yet")
 
         table = np.zeros([graph.number_of_nodes(), len(headers)])
 
@@ -97,10 +102,11 @@ class TrackingCSVExportFormatPlugin(TrackingExportFormatPlugin):
             colIdx = 6
 
             for category in categories:
-                for feature in list(features[frame][category].keys()):
+                for feature in sorted(list(features[frame][category].keys())):
 
                     if feature not in excludedFeatures and feature not in blockedFeatures[category]:
-                        if (np.asarray(features[frame][category][feature])).ndim == 2:
+                        ndim = (np.asarray(features[frame][category][feature])).ndim
+                        if ndim == 2:
                             for column in range(np.asarray(features[frame][category][feature]).shape[1]):
                                 try:
                                     table[rowIdx, colIdx] = features[frame][category][feature][label, column]
@@ -110,9 +116,13 @@ class TrackingCSVExportFormatPlugin(TrackingExportFormatPlugin):
                                     else:
                                         table[rowIdx, colIdx] = 0
                                 colIdx += 1
-                        else:
+                        elif ndim == 1:
                             table[rowIdx, colIdx] = features[frame][category][feature][label]
                             colIdx += 1
+                        elif ndim == 0:
+                            pass # ignoring "global" features
+                        else:
+                            raise ValueError(f"Found feature matrix {feature} that has a dimensionality of > 2, cannot handle that yet")
 
         # sort table by frame, then labelImage
         table = table[np.lexsort(table[:, :2].transpose()[::-1])]

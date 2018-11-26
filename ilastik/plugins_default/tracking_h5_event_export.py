@@ -15,7 +15,7 @@ try:
                                      getMergersPerTimestep, getLinksPerTimestep, getDetectionsPerTimestep, \
                                      getDivisionsPerTimestep
 except ImportError:
-    logger.warn("Could not load hytra. Event exporting plugin not loaded.")
+    logger.warning("Could not load hytra. Event exporting plugin not loaded.")
 else:
 
     def writeEvents(timestep, activeLinks, activeDivisions, mergers, detections, fn, labelImage, verbose=False):
@@ -89,20 +89,21 @@ else:
     
         def checkFilesExist(self, filename):
             ''' Check whether the files we want to export are already present '''
-            return os.path.exists(os.path.join(filename, 'H5-Event-Sequence'))
+            return os.path.exists(filename)
     
-        def export(self, filename, hypothesesGraph, objectFeaturesSlot, labelImageSlot, rawImageSlot):
+        def export(self, filename, hypothesesGraph, pluginExportContext):
             """Export the tracking solution stored in the hypotheses graph as a sequence of H5 files,
             one per frame, containing the label image of that frame and which objects were part
             of a move or a division.
     
             :param filename: string of the FOLDER where to save the result
             :param hypothesesGraph: hytra.core.hypothesesgraph.HypothesesGraph filled with a solution
-            :param objectFeaturesSlot: lazyflow.graph.InputSlot, connected to the RegionFeaturesAll output 
-                   of ilastik.applets.trackingFeatureExtraction.opTrackingFeatureExtraction.OpTrackingFeatureExtraction
-            
+            :param pluginExportContext: instance of ilastik.plugins.PluginExportContext containing:
+                labelImageSlot (required here) as well as objectFeaturesSlot, rawImageSlot, additionalPluginArgumentsSlot
+
             :returns: True on success, False otherwise
             """
+            labelImageSlot = pluginExportContext.labelImageSlot
             traxelIdPerTimestepToUniqueIdMap, uuidToTraxelMap = hypothesesGraph.getMappingsBetweenUUIDsAndTraxels()
             timesteps = [t for t in traxelIdPerTimestepToUniqueIdMap.keys()]
     
@@ -119,6 +120,9 @@ else:
             pool = RequestPool()
     
             timeIndex = labelImageSlot.meta.axistags.index('t')
+
+            if not os.path.exists(filename):
+                os.makedirs(filename)
     
             for timestep in traxelIdPerTimestepToUniqueIdMap.keys():
                 # extract current frame lable image
@@ -127,9 +131,7 @@ else:
                 roi = tuple(roi)
                 labelImage = labelImageSlot[roi].wait()
     
-                if not os.path.exists(filename + '/H5-Event-Sequence'):
-                    os.makedirs(filename + '/H5-Event-Sequence')
-                fn = os.path.join(filename, "H5-Event-Sequence/{0:05d}.h5".format(int(timestep)))
+                fn = os.path.join(filename, "{0:05d}.h5".format(int(timestep)))
                 pool.add(Request(partial(writeEvents,
                                             int(timestep),
                                              linksPerTimestep[timestep],

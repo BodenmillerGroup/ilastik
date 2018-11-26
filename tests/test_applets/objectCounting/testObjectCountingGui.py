@@ -26,8 +26,6 @@ from __future__ import division
 #TODO: test load a referecence project
 
 
-from builtins import range
-from past.utils import old_div
 import os
 import sys
 import numpy
@@ -63,38 +61,37 @@ class TestObjectCountingGui(ShellGuiTestCaseBase):
         from ilastik.workflows.counting import CountingWorkflow
         return CountingWorkflow
 
-    PROJECT_FILE = os.path.split(__file__)[0] + '/test_project-counting.ilp'
-    #SAMPLE_DATA = os.path.split(__file__)[0] + '/synapse_small.npy'
+    PROJECT_FILE = os.path.join(os.path.split(__file__)[0], 'test_project-counting.ilp')
+    #SAMPLE_DATA = os.path.join(os.path.split(__file__)[0], 'synapse_small.npy')
 
     @classmethod
-    def setupClass(cls):
-        if 'TRAVIS' in os.environ:
-            # The counting workflow doesn't import correctly on Travis, so skip this test.
-            import nose
-            raise nose.SkipTest
+    def setup_class(cls):
         # Base class first
-        super(TestObjectCountingGui, cls).setupClass()
+        super(TestObjectCountingGui, cls).setup_class()
         
         if hasattr(cls, 'SAMPLE_DATA'):
             cls.using_random_data = False
         else:
             cls.using_random_data = True
-            cls.SAMPLE_DATA = os.path.split(__file__)[0] + '/random_data.npy'
+            cls.SAMPLE_DATA = os.path.join(os.path.split(__file__)[0], 'random_data.npy')
             data = numpy.random.random((200,200,3))
             data *= 256
             numpy.save(cls.SAMPLE_DATA, data.astype(numpy.uint8))
+
+        # Sample Sigma value for OpCounting.opTrain (OpTrainCounter).
+        cls.COUNTING_SIGMA = 4.2
         
         # Start the timer
         cls.timer = Timer()
         cls.timer.unpause()
 
     @classmethod
-    def teardownClass(cls):
+    def teardown_class(cls):
         cls.timer.pause()
         logger.debug( "Total Time: {} seconds".format( cls.timer.seconds() ) )
         
         # Call our base class so the app quits!
-        super(TestObjectCountingGui, cls).teardownClass()
+        super(TestObjectCountingGui, cls).teardown_class()
 
         # Clean up: Delete any test files we generated
         removeFiles = [ TestObjectCountingGui.PROJECT_FILE ]
@@ -130,8 +127,6 @@ class TestObjectCountingGui(ShellGuiTestCaseBase):
              
             # Set some features
             opFeatures = workflow.featureSelectionApplet.topLevelOperator
-            opFeatures.FeatureIds.setValue( OpPixelFeaturesPresmoothed.DefaultFeatureIds )
-            opFeatures.Scales.setValue( [0.3, 0.7, 1, 1.6, 3.5, 5.0, 10.0] )
             #                    sigma:   0.3    0.7    1.0    1.6    3.5    5.0   10.0
             selections = numpy.array( [[True, False, False, False, False, False, False],
                                        [True, False, False, False, False, False, False],
@@ -147,6 +142,8 @@ class TestObjectCountingGui(ShellGuiTestCaseBase):
             countingClassApplet = workflow.countingApplet
             gui = countingClassApplet.getMultiLaneGui()
             opCount = countingClassApplet.topLevelOperator
+
+            opCount.opTrain.Sigma.setValue(self.COUNTING_SIGMA)
  
             # Select the labeling drawer
             self.shell.setSelectedAppletDrawer(COUNTING_APPLET_INDEX)
@@ -179,6 +176,8 @@ class TestObjectCountingGui(ShellGuiTestCaseBase):
             self.shell.openProjectFile(self.PROJECT_FILE)
             assert self.shell.projectManager.currentProjectFile is not None
             assert isinstance(self.shell.workflow.applets[COUNTING_APPLET_INDEX], CountingApplet)
+            opCount = self.shell.projectManager.workflow.countingApplet.topLevelOperator
+            assert opCount.opTrain.Sigma.value == self.COUNTING_SIGMA
   
         # Run this test from within the shell event loop
         self.exec_in_shell(impl)
@@ -248,7 +247,7 @@ class TestObjectCountingGui(ShellGuiTestCaseBase):
             labelData = opPix.LabelImages[0][:].wait()
             labelData = vigra.taggedView( labelData, opPix.LabelImages[0].meta.axistags )
             labelData = labelData.withAxes('xy')
-            center = old_div((numpy.array(labelData.shape[:-1])),2) + 1
+            center = (numpy.array(labelData.shape[:-1]) // 2) + 1
             
             true_idx = numpy.array([center + dot for dot in dot_start_list])
             idx = numpy.where(labelData)
@@ -518,5 +517,5 @@ class TestObjectCountingGui(ShellGuiTestCaseBase):
 
 
 if __name__ == "__main__":
-    from tests.helpers.shellGuiTestCaseBase import run_shell_nosetest
-    run_shell_nosetest(__file__)
+    from tests.helpers.shellGuiTestCaseBase import run_shell_test
+    run_shell_test(__file__)

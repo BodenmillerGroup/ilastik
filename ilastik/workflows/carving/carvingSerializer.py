@@ -18,8 +18,12 @@
 # on the ilastik web site at:
 #		   http://ilastik.org/license.html
 ###############################################################################
+from typing import TYPE_CHECKING
+
 from builtins import range
-from ilastik.applets.base.appletSerializer import AppletSerializer, getOrCreateGroup, deleteIfPresent
+from ilastik.applets.base.appletSerializer import (
+    AppletSerializer, getOrCreateGroup, deleteIfPresent, SerialSlot
+)
 import numpy
 
 from lazyflow.roi import roiFromShape, roiToSlice
@@ -27,17 +31,32 @@ from lazyflow.roi import roiFromShape, roiToSlice
 import logging
 logger = logging.getLogger(__name__)
 
-class CarvingSerializer( AppletSerializer ):
-    def __init__(self, carvingTopLevelOperator, *args, **kwargs):
-        super(CarvingSerializer, self).__init__(*args, **kwargs)
-        self._o = carvingTopLevelOperator 
-        
-        
+if TYPE_CHECKING:
+    from .opCarving import OpCarving
+
+
+class CarvingSerializer(AppletSerializer):
+    def __init__(self, operator: 'OpCarving', groupName):
+        super().__init__(groupName, slots=[
+            SerialSlot(operator.ObjectPrefix)
+        ])
+        self._o = operator
+
     def _serializeToHdf5(self, topGroup, hdf5File, projectFilePath):
         obj = getOrCreateGroup(topGroup, "objects")
         for imageIndex, opCarving in enumerate( self._o.innerOperators ):
-            mst = opCarving._mst 
-            for name in opCarving._dirtyObjects:
+            mst = opCarving._mst
+
+            # Populate a list of objects to save:
+            objects_to_save = set(list(mst.object_names.keys()))
+            objects_already_saved = set(list(topGroup["objects"]))
+            # 1.) all objects that are in mst.object_names that are not in saved
+            objects_to_save = objects_to_save.difference(objects_already_saved)
+
+            # 2.) add opCarving._dirtyObjects:
+            objects_to_save = objects_to_save.union(opCarving._dirtyObjects)
+
+            for name in objects_to_save:
                 logger.info( "[CarvingSerializer] serializing %s" % name )
                
                 if name in obj and name in mst.object_seeds_fg_voxels: 
@@ -97,7 +116,7 @@ class CarvingSerializer( AppletSerializer ):
 
             logger.info( "saved seeds" )
         
-    def _deserializeFromHdf5(self, topGroup, groupVersion, hdf5File, projectFilePath):
+    def _deserializeFromHdf5(self, topGroup, groupVersion, hdf5File, projectFilePath, headless=False):
         obj = topGroup["objects"]
         for imageIndex, opCarving in enumerate( self._o.innerOperators ):
             mst = opCarving._mst 
@@ -186,4 +205,3 @@ class CarvingSerializer( AppletSerializer ):
     #this is present only for the serializer AppletInterface
     def unload(self):
         pass
-    

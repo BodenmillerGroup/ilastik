@@ -29,7 +29,7 @@ from ilastik.applets.dataSelection.opDataSelection import OpDataSelectionGroup, 
 class TestOpDataSelectionGroup(object):
 
     @classmethod
-    def setupClass(cls):
+    def setup_class(cls):
         cls.workingDir = tempfile.mkdtemp()
         cls.group1Data = [ ( os.path.join(cls.workingDir, 'A.npy'), numpy.random.random( (100,100, 1) ) ),
                            ( os.path.join(cls.workingDir, 'C.npy'), numpy.random.random( (100,100, 1) ) ) ]
@@ -38,7 +38,7 @@ class TestOpDataSelectionGroup(object):
             numpy.save(name, data)
 
     @classmethod
-    def teardownClass(cls):
+    def teardown_class(cls):
         shutil.rmtree(cls.workingDir)
 
     def test(self):
@@ -90,15 +90,15 @@ class TestOpDataSelectionGroup(object):
         the operator should automatically transpose it to be last.
         """
         weirdAxisFilename = os.path.join(self.workingDir, 'WeirdAxes.npy')
-        weirdAxisData = numpy.random.random( (3,100,100) )
-        numpy.save(weirdAxisFilename, weirdAxisData)
+        expected_data = numpy.random.random( (3,100,100) )
+        numpy.save(weirdAxisFilename, expected_data)
 
         info = DatasetInfo()
         info.filePath = weirdAxisFilename
         info.axistags = vigra.defaultAxistags('cxy')
         
         graph = Graph()
-        op = OpDataSelectionGroup( graph=graph )
+        op = OpDataSelectionGroup(graph=graph, forceAxisOrder=False)
         op.WorkingDirectory.setValue( self.workingDir )
         op.DatasetRoles.setValue( ['RoleA'] )
 
@@ -107,12 +107,10 @@ class TestOpDataSelectionGroup(object):
 
         assert op.ImageGroup[0].ready()
         
-        # Note that we expect the channel axis to be transposed to be last.
-        expected_data = weirdAxisData.transpose( 1,2,0 )
         data_from_op = op.ImageGroup[0][:].wait()
         
         assert data_from_op.dtype == expected_data.dtype 
-        assert data_from_op.shape == expected_data.shape
+        assert data_from_op.shape == expected_data.shape, (data_from_op.shape, expected_data.shape)
         assert (data_from_op == expected_data).all()
 
         # op.Image is a synonym for op.ImageGroup[0]
@@ -159,10 +157,3 @@ class TestOpDataSelectionGroup(object):
         
         # Ensure that files opened by the inner operators are closed before we exit.
         op.DatasetGroup.resize(0)
-
-if __name__ == "__main__":
-    import sys
-    import nose
-    sys.argv.append("--nocapture")    # Don't steal stdout.  Show it on the console as usual.
-    sys.argv.append("--nologcapture") # Don't set the logging level to DEBUG.  Leave it alone.
-    nose.run(defaultTest=__file__)

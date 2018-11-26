@@ -26,7 +26,7 @@ import numpy as np
 import h5py
 import tempfile
 import csv
-import nose
+import pytest
 
 from lazyflow.graph import Graph
 from lazyflow.operators.ioOperators import OpStackLoader
@@ -62,14 +62,14 @@ class TestStructuredLearningTrackingHeadless(object):
 
     EXPECTED_TRACKING_RESULT_FILE = ilastik_tests_file_path+'data/inputdata/cell_tracking_challenge_15/Fluo-N2DH-SIM/01/learningRaw-2017-01-17_Tracking-Result.h5'
     EXPECTED_CSV_FILE = ilastik_tests_file_path+'data/inputdata/cell_tracking_challenge_15/Fluo-N2DH-SIM/01/learningRaw-2017-01-17_CSV-Table.csv'
-    EXPECTED_SHAPE = (10, 495, 534, 1, 1) # Expected shape for tracking results HDF5 files
+    EXPECTED_SHAPE = (10, 495, 534, 1) # Expected shape for tracking results HDF5 files
     EXPECTED_NUM_LINES_TRACKING = 164 # Number of lines expected in exported csv file
     EXPECTED_NUM_DIVISIONS = 6 # Number of lines expected in exported csv file
     EXPECTED_MERGER_NUM = 0 # Number of mergers expected in exported csv file
     EXPECTED_FALSE_DETECTIONS_NUM = 1 # Number of false detections expected in exported csv file
 
     @classmethod
-    def setupClass(cls):
+    def setup_class(cls):
         logger.info('starting setup...')
         cls.original_cwd = os.getcwd()
 
@@ -84,7 +84,7 @@ class TestStructuredLearningTrackingHeadless(object):
 
 
     @classmethod
-    def teardownClass(cls):
+    def teardown_class(cls):
         removeFiles = [cls.ilastik_tests_file_path+'data/inputdata/cell_tracking_challenge_15/Fluo-N2DH-SIM/01/learningRaw-2017-01-17_Tracking-Result.h5',
                        cls.ilastik_tests_file_path+'data/inputdata/cell_tracking_challenge_15/Fluo-N2DH-SIM/01/learningRaw-2017-01-17_CSV-Table.csv']
 
@@ -103,8 +103,7 @@ class TestStructuredLearningTrackingHeadless(object):
         try:
             import ilastik.workflows.tracking.structured
         except ImportError as e:
-            logger.warn( "Structured learning tracking could not be imported. CPLEX is most likely missing: " + str(e) )
-            raise nose.SkipTest
+            pytest.xfail( "Structured learning tracking could not be imported. CPLEX is most likely missing: " + str(e) )
 
         # Skip test because there are missing files
         if not os.path.isfile(self.PROJECT_FILE) or not os.path.isfile(self.RAW_DATA_FILE) or not os.path.isfile(self.BINARY_SEGMENTATION_FILE):
@@ -140,8 +139,7 @@ class TestStructuredLearningTrackingHeadless(object):
         try:
             import hytra
         except ImportError as e:
-            logger.warn("Hytra tracking pipeline couldn't be imported: " + str(e))
-            raise nose.SkipTest
+            pytest.xfail("Hytra tracking pipeline couldn't be imported: " + str(e))
 
         # Skip test because there are missing files
         if not os.path.isfile(self.PROJECT_FILE) or not os.path.isfile(self.RAW_DATA_FILE) or not os.path.isfile(
@@ -216,14 +214,3 @@ class TestStructuredLearningTrackingHeadless(object):
             division_count /= 2
             logger.info("Number of divisions in the csv file: {}".format(division_count))
             assert division_count == self.EXPECTED_NUM_DIVISIONS, 'Number of divisions {} in the csv file differs from expected {}.'.format(division_count,self.EXPECTED_NUM_DIVISIONS)
-
-if __name__ == "__main__":
-    # Make the program quit on Ctrl+C
-    import signal
-    signal.signal(signal.SIGINT, signal.SIG_DFL)
-
-    import sys
-    import nose
-    sys.argv.append("--nocapture")    # Don't steal stdout.  Show it on the console as usual.
-    sys.argv.append("--nologcapture") # Don't set the logging level to DEBUG.  Leave it alone.
-    nose.run(defaultTest=__file__)

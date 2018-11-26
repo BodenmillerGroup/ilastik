@@ -23,13 +23,15 @@
 import unittest
 import numpy as np
 import vigra
+import pytest
 
 from numpy.testing.utils import assert_array_equal, assert_array_almost_equal, assert_array_less
 
 from lazyflow.graph import Graph
 from lazyflow.operators.opArrayPiper import OpArrayPiper
 
-from ilastik.applets.thresholdTwoLevels.opGraphcutSegment import OpObjectsSegment, OpGraphCut
+from ilastik.applets.thresholdTwoLevels.opGraphcutSegment import haveGraphCut
+
 
 def getTestVolume():
     t, c = 3, 2
@@ -77,12 +79,16 @@ def getTinyTestVolume():
     return (fullVolume, fullLabels)
 
 
+if haveGraphCut():
+    from ilastik.applets.thresholdTwoLevels.opGraphcutSegment import OpObjectsSegment, OpGraphCut
 
+
+@pytest.mark.skipif(not haveGraphCut(), reason="GraphCut not available")
 class TestOpGraphCut(unittest.TestCase):
- 
+
     def setUp(self):
         self.tinyVolume, self.labels = getTinyTestVolume()
- 
+
     def testComplete(self):
         graph = Graph()
         op = OpGraphCut(graph=graph)
@@ -108,8 +114,9 @@ class TestOpGraphCut(unittest.TestCase):
     #TODO test dirty propagation
 
 
+@pytest.mark.skipif(not haveGraphCut(), reason="GraphCut not available")
 class TestOpObjectsSegment(unittest.TestCase):
-    
+
     def setUp(self):
         self.vol, self.labels = getTestVolume()
         self.tinyVol, self.tinyLabels = getTinyTestVolume()
@@ -196,9 +203,3 @@ class TestOpObjectsSegment(unittest.TestCase):
             op.LabelImage.connect(piper.Output)
 
     #TODO test dirty propagation
-if __name__ == "__main__":
-    import sys
-    import nose
-    sys.argv.append("--nocapture")    # Don't steal stdout.  Show it on the console as usual.
-    sys.argv.append("--nologcapture") # Don't set the logging level to DEBUG.  Leave it alone.
-    nose.run(defaultTest=__file__)

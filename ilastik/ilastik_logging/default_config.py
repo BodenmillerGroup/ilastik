@@ -161,11 +161,9 @@ def get_default_config( prefix="",
             "lazyflow.operators":                                       { "level":"INFO" },
             "lazyflow.classifiers":                                     { "level":"INFO" },
             "lazyflow.operators.ioOperators":                           { "level":"INFO" },
-            "lazyflow.operators.opVigraWatershed":                      { "level":"INFO" },
             "lazyflow.operators.ioOperators.opRESTfulVolumeReader":     { "level":"INFO" },
-            "lazyflow.operators.opArrayCache.OpArrayCache":             { "level":"INFO" },
             "lazyflow.operators.cacheMemoryManager.CacheMemoryManager": { "level":"INFO" },
-            "lazyflow.operators.vigraOperators":                        { "level":"INFO" },
+            "lazyflow.operators.filterOperators":                       { "level":"INFO" },
             "lazyflow.operators.ioOperators.ioOperators.OpH5WriterBigDataset":   { "level":"INFO" },
             "lazyflow.operators.classifierOperators":                   { "level":"INFO" },
             "lazyflow.operators.opCompressedCache":                     { "level":"INFO" },
@@ -213,7 +211,6 @@ def get_default_config( prefix="",
             "TRACE.lazyflow.operators.operators":                       { "level":"INFO" },
             "TRACE.lazyflow.operators.generic":                         { "level":"INFO" },
             "TRACE.lazyflow.operators.classifierOperators":             { "level":"INFO" },
-            "TRACE.lazyflow.operators.operators.OpArrayCache":          { "level":"INFO" },
             "TRACE.lazyflow.operators.operators.ArrayCacheMemoryMgr":   { "level":"INFO" },
             "TRACE.lazyflow.operators.valueProviders.OpValueCache":     { "level":"INFO" },
             "TRACE.ilastik.clusterOps":                                 { "level":"INFO" },
@@ -241,15 +238,12 @@ def init(format_prefix="", output_mode=OutputMode.LOGFILE_WITH_CONSOLE_ERRORS, l
     # Preserve pre-existing handlers
     for handler in original_root_handlers:
         logging.getLogger().addHandler(handler)
-    
+
     # Update from the user's customizations
     loggingHelpers.updateFromConfigFile()
-    
+
     # Capture warnings from the warnings module
     logging.captureWarnings(True)
-    
-    # Warnings module warnings are shown only once
-    warnings.filterwarnings("once")
 
     # Don't warn about pending deprecations (PyQt generates some of these)
     warnings.filterwarnings("ignore", category=PendingDeprecationWarning)
