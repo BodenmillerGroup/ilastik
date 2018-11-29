@@ -41,4 +41,5 @@ class NNClassificationSerializer(AppletSerializer):
                                  selfdepends=False,
                                  shrink_to_bb=True)]
 
-        super(NNClassificationSerializer, self).__init__(projectFileGroupName, slots)
+
+        super(NNClassificationSerializer, self).__init__(projectFileGroupName, slots, topLevelOperator)
